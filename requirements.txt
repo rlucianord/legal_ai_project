@@ -1,0 +1,10 @@
+pandas
+numpy
+scikit-learn
+transformers
+datasets
+torch
+pdfminer
+PyPDF2
+faiss-cpu
+sentence-transformers
