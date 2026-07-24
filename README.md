@@ -53,7 +53,7 @@ Sistema de IA para consultas sobre la Constitución Dominicana utilizando proces
 ### 1. Clonar el Repositorio
 
 ```bash
-git clone https://github.com/tu-usuario/legal_ai_project.git
+git clone https://github.com/rlucianord/legal_ai_project/edit/main/README.md
 cd legal_ai_project
 ```
 
