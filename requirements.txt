@@ -3,8 +3,14 @@ numpy
 scikit-learn
 transformers
 datasets
-torch
 pdfminer
 PyPDF2
 faiss-cpu
 sentence-transformers
+torch>=2.6.0
+torchvision
+torchaudio
+pdfminer.six
+accelerate>=1.1.0
+language-tool-python
+--extra-index-url https://download.pytorch.org/whl/cu121
