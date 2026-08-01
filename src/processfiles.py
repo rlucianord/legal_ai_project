@@ -158,81 +158,101 @@ def limpiar_texto_profundo(texto: str) -> str:
 
     return "\n".join(lineas_finales)
 
-
 # ==========================================
-# 3. PARSER JERÁRQUICO
+# 3. PARSER JERÁRQUICO CORREGIDO
 # ==========================================
 def parse_hierarchical_structure(text: str) -> list:
-    """Parsea la estructura jerárquica: Títulos -> Secciones -> Artículos."""
+    """Parsea la estructura jerárquica de forma segura usando búsqueda secuencial."""
+    # Para simplificar y mantener la robustez jurídica, detectamos bloques de artículos 
+    # manteniendo el contexto del Título y Sección actual de manera incremental.
+    
     estructura = []
+    
+    # Dividir primero por Títulos de manera limpia
     patron_titulo = r'(?i)\b(T[IÍ]TULO\s+[IVXLCDM]+\b[^.\n]*)'
     fragmentos_titulos = re.split(patron_titulo, text)
     
     if len(fragmentos_titulos) <= 1:
-        return [{"titulo": "General", "secciones": parsear_secciones(text)}]
+        return [{"titulo": "General", "secciones": [{"seccion": "General", "articulos": extraer_articulos_seguro(text)}]}]
     
     preambulo = fragmentos_titulos[0].strip()
     if preambulo:
         estructura.append({
             "titulo": "Preámbulo / Disposiciones Preliminares",
-            "secciones": [{"seccion": "General", "articulos": [{"numero_articulo": "S/N", "texto_completo": preambulo}]}]
+            "secciones": [{"seccion": "General", "articulos": extraer_articulos_seguro(preambulo)}]
         })
     
     for i in range(1, len(fragmentos_titulos), 2):
         nombre_titulo = fragmentos_titulos[i].strip()
         contenido_titulo = fragmentos_titulos[i+1] if (i+1) < len(fragmentos_titulos) else ""
+        
         estructura.append({
             "titulo": nombre_titulo,
-            "secciones": parsear_secciones(contenido_titulo)
+            "secciones": parsear_secciones_seguro(contenido_titulo)
         })
         
     return estructura
 
-def parsear_secciones(texto_titulo: str) -> list:
-    """Divide el contenido de un Título en Secciones."""
+def parsear_secciones_seguro(texto_titulo: str) -> list:
+    """Divide el contenido de un Título en Secciones de forma segura."""
     patron_seccion = r'(?i)\b(SECCI[OÓ]N\s+(?:[IVXLCDM]+|[A-ZÁÉÍÓÚÑ]+))\b'
     fragmentos_secciones = re.split(patron_seccion, texto_titulo)
     
     if len(fragmentos_secciones) <= 1:
-        return [{"seccion": "General", "articulos": extraer_articulos(texto_titulo)}]
+        return [{"seccion": "General", "articulos": extraer_articulos_seguro(texto_titulo)}]
     
     secciones = []
     texto_inicial = fragmentos_secciones[0].strip()
     if texto_inicial:
-        secciones.append({"seccion": "General", "articulos": extraer_articulos(texto_inicial)})
+        secciones.append({"seccion": "General", "articulos": extraer_articulos_seguro(texto_inicial)})
         
     for i in range(1, len(fragmentos_secciones), 2):
         nombre_seccion = fragmentos_secciones[i].strip()
         contenido_seccion = fragmentos_secciones[i+1] if (i+1) < len(fragmentos_secciones) else ""
-        secciones.append({"seccion": nombre_seccion, "articulos": extraer_articulos(contenido_seccion)})
+        secciones.append({
+            "seccion": nombre_seccion, 
+            "articulos": extraer_articulos_seguro(contenido_seccion)
+        })
         
     return secciones
 
-def extraer_articulos(bloque_texto: str) -> list:
-    """Extrae artículos dividiendo el texto por la palabra clave Artículo."""
+def extraer_articulos_seguro(bloque_texto: str) -> list:
+    """Extrae artículos usando finditer para evitar desajustes de índices por ruido de OCR."""
     articulos = []
+    # Patrón estricto para capturar la palabra Artículo y su número identificador
     patron_articulo = r'(?i)\b(?:Art[ií]culo|Art\.?)\s*(\d+[°ºa-zA-Z]*)\s*[\.\-:]*'
-    fragmentos_arts = re.split(patron_articulo, bloque_texto)
     
-    if len(fragmentos_arts) <= 1:
+    matches = list(re.finditer(patron_articulo, bloque_texto))
+    
+    if not matches:
         if bloque_texto.strip():
             return [{"numero_articulo": "S/N", "texto_completo": bloque_texto.strip()}]
         return []
-        
-    texto_suelto = fragmentos_arts[0].strip()
+    
+    # Texto antes del primer artículo (introducción)
+    texto_suelto = bloque_texto[:matches[0].start()].strip()
     if texto_suelto:
         articulos.append({"numero_articulo": "Introducción", "texto_completo": texto_suelto})
         
-    for i in range(1, len(fragmentos_arts), 2):
-        num_art = fragmentos_arts[i].strip()
-        texto_art = fragmentos_arts[i+1].strip() if (i+1) < len(fragmentos_arts) else ""
-        articulos.append({
-            "numero_articulo": f"Artículo {num_art}",
-            "texto_completo": texto_art
-        })
+    for idx, match in enumerate(matches):
+        num_art = match.group(1).strip()
+        inicio_texto = match.end()
         
+        # El fin del artículo actual es el inicio del siguiente, o el final del bloque
+        if idx + 1 < len(matches):
+            fin_texto = matches[idx + 1].start()
+        else:
+            fin_texto = len(bloque_texto)
+            
+        texto_art = bloque_texto[inicio_texto:fin_texto].strip()
+        
+        if texto_art:
+            articulos.append({
+                "numero_articulo": f"Artículo {num_art}",
+                "texto_completo": texto_art
+            })
+            
     return articulos
-
 
 # ==========================================
 # 4. PIPELINE DE PROCESAMIENTO E INDEXACIÓN
