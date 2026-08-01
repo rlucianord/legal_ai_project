@@ -280,19 +280,53 @@ def es_pregunta_de_seguimiento(texto_usuario: str, tiene_historial: bool) -> boo
 
     return es_corta or contiene_indicador
 
+# def limpiar_texto_ocr(texto):
+#     if not texto:
+#         return ""
+
+#     texto = re.sub(r'\b\d{1,3}\s*[-–—_]*\s*ASAMBLEA NACIONAL\b', '', texto, flags=re.IGNORECASE)
+#     texto = re.sub(r'[-_]{5,}', '', texto)
+#     texto = re.sub(r'í\'\s*\\|~~-\s*\\|v:k|0\s*\\vi', '', texto)
+    
+#     texto = re.sub(r'(?<=\s)([a-záéíóúñ])\s+([a-záéíóúñ])(?=\s)', r'\1\2', texto, flags=re.IGNORECASE)
+
+#     lineas = texto.splitlines()
+#     lineas_filtradas = [l.strip() for l in lineas if l.strip() and not re.match(r'^[\d\s\-\(\)~]{1,5}$', l.strip())]
+#     texto_unido = " ".join(lineas_filtradas)
+#     texto_estructurado = re.sub(r'\s+(\d{1,2}\))', r'\n\1', texto_unido)
+
+#     lineas_finales = []
+#     vistas = set()
+#     for linea in texto_estructurado.splitlines():
+#         linea_limpia = re.sub(r'\s+', ' ', linea).strip()
+#         clave_linea = linea_limpia[:40] if len(linea_limpia) > 40 else linea_limpia
+#         if clave_linea in vistas and len(linea_limpia) < 80:
+#             continue
+#         vistas.add(clave_linea)
+#         lineas_finales.append(linea_limpia)
+
+#     return "\n".join(lineas_finales)
+
 def limpiar_texto_ocr(texto):
     if not texto:
         return ""
 
+    # Eliminar marcas de asamblea o patrones extraños de OCR
     texto = re.sub(r'\b\d{1,3}\s*[-–—_]*\s*ASAMBLEA NACIONAL\b', '', texto, flags=re.IGNORECASE)
     texto = re.sub(r'[-_]{5,}', '', texto)
     texto = re.sub(r'í\'\s*\\|~~-\s*\\|v:k|0\s*\\vi', '', texto)
     
+    # Unir letras sueltas separadas por espacios erróneos de OCR
     texto = re.sub(r'(?<=\s)([a-záéíóúñ])\s+([a-záéíóúñ])(?=\s)', r'\1\2', texto, flags=re.IGNORECASE)
 
+    # Limpiar saltos de línea y líneas vacías o de ruido
     lineas = texto.splitlines()
     lineas_filtradas = [l.strip() for l in lineas if l.strip() and not re.match(r'^[\d\s\-\(\)~]{1,5}$', l.strip())]
     texto_unido = " ".join(lineas_filtradas)
+    
+    # REGLA CLAVE PARA ESPACIOS INNECESARIOS: Colapsar cualquier espacio múltiple en uno solo
+    texto_unido = re.sub(r'\s+', ' ', texto_unido)
+
     texto_estructurado = re.sub(r'\s+(\d{1,2}\))', r'\n\1', texto_unido)
 
     lineas_finales = []
@@ -306,7 +340,6 @@ def limpiar_texto_ocr(texto):
         lineas_finales.append(linea_limpia)
 
     return "\n".join(lineas_finales)
-
 
 def get_response(query, history=None, llm_client=None):
     respuesta_bruta, _, _ = chatbot_instance.chat_con_memoria(query, history, llm_client)
