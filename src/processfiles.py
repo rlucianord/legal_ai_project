@@ -9,9 +9,7 @@ from pdfminer.high_level import extract_text as pdfminer_extract_text
 import chromadb
 from sentence_transformers import SentenceTransformer
 from spellcorrrect import CorrectorConsultas
-# ==========================================
-# 1. CONFIGURACIÓN LOCAL DE POPPLER Y TESSERACT
-# ==========================================
+
 POPPLER_PATH = os.path.join(os.getcwd(), "poppler-24.08.0", "Library", "bin")
 if not os.path.exists(POPPLER_PATH):
     POPPLER_PATH = os.path.join(os.getcwd(), "poppler-24.08.0", "bin")
@@ -29,11 +27,16 @@ else:
     print(f"⚠️ Advertencia: No se encontró Poppler en '{POPPLER_PATH}'.")
 
 
-# ==========================================
-# 2. EXTRACCIÓN Y LIMPIEZA
-# ==========================================
 def extract_text_with_ocr(file_path: str) -> str:
-    """Extrae texto de PDFs escaneados usando Poppler y Tesseract-OCR."""
+    """
+    Extrae texto de PDFs escaneados usando OCR con Tesseract.
+    
+    Args:
+        file_path: Ruta al archivo PDF
+    
+    Returns:
+        Texto extraído mediante OCR o cadena vacía si falla
+    """
     try:
         if not os.path.exists(POPPLER_PATH) or not os.path.exists(TESSERACT_PATH):
             return ""
@@ -48,7 +51,17 @@ def extract_text_with_ocr(file_path: str) -> str:
         return ""
 
 def extract_text(file_path: str) -> str:
-    """Extrae texto priorizando pdfminer, respaldando con OCR y PyPDF2."""
+    """
+    Extrae texto de PDF con múltiples métodos en orden de preferencia.
+    
+    Prioriza pdfminer, luego OCR, y finalmente PyPDF2 como fallback.
+    
+    Args:
+        file_path: Ruta al archivo PDF
+    
+    Returns:
+        Texto extraído del PDF
+    """
     try:
         texto = pdfminer_extract_text(file_path)
         if texto and len(texto.strip()) > 50:
@@ -71,16 +84,32 @@ def extract_text(file_path: str) -> str:
     return text
 
 def normalize_spanish(text: str) -> str:
-    """Normaliza caracteres Unicode a forma NFC."""
+    """
+    Normaliza caracteres Unicode a forma NFC para español.
+    
+    Args:
+        text: Texto a normalizar
+    
+    Returns:
+        Texto normalizado en forma NFC
+    """
     if not text:
         return ""
     return unicodedata.normalize("NFC", text)
 
 def fix_common_errors(text: str) -> str:
-    """Corrige errores frecuentes de OCR en textos jurídicos en español."""
+    """
+    Corrige errores frecuentes de OCR en textos jurídicos en español.
+    
+    Args:
+        text: Texto con posibles errores de OCR
+    
+    Returns:
+        Texto con errores corregidos
+    """
     replacements = {
         r"\benseniianza\b": "enseñanza",
-        r"\bensenianza\b": "enseñanza",
+        r"\benesianza\b": "enseñanza",
         r"\bniio\b": "niño",
         r"\bniia\b": "niña",
         r"\banios\b": "años",
@@ -103,41 +132,38 @@ def fix_common_errors(text: str) -> str:
 
 def limpiar_texto_profundo(texto: str) -> str:
     """
-    Función de limpieza centralizada y segura:
-    - Remueve ruido de escaneo/marcas de agua.
-    - Corrige errores conocidos de OCR sin fusionar palabras válidas.
+    Limpia profundamente texto legal eliminando ruido de escaneo y errores OCR.
+    
+    Args:
+        texto: Texto a limpiar
+    
+    Returns:
+        Texto limpio sin artefactos de escaneo
     """
     if not texto or not isinstance(texto, str):
         return ""
 
-    # Asegurar que las funciones auxiliares no devuelvan None
     texto = normalize_spanish(texto) or ""
     texto = fix_common_errors(texto) or ""
 
-    # Blindaje extra por si acaso alguna función externa alteró el tipo
     if not isinstance(texto, str):
         texto = str(texto)
 
-    # 1. Eliminar ruido de marcas, páginas y cabeceras
     texto = re.sub(r'\b\d{1,3}\s*[-–—_]*\s*ASAMBLEA NACIONAL\b', '', texto, flags=re.IGNORECASE)
     texto = re.sub(r'[-_]{5,}', '', texto)
     texto = re.sub(r'^\s*-\s*\d+\s*-\s*$', '', texto, re.MULTILINE)
     texto = re.sub(r'^(Página|Pag\.|Pág\.)\s*\d+(\s*de\s*\d+)?$', '', texto, re.IGNORECASE | re.MULTILINE)
     
-    # 2. Reparar únicamente guiones de corte de línea al final de la línea
     texto = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texto)
     
     RANGO_ANIO = "1940" 
     texto = re.sub(r'\bk9\s*a\b', RANGO_ANIO, texto, flags=re.IGNORECASE)
     
-    # 3. Normalizar espacios múltiples a un solo espacio de forma segura
     texto = re.sub(r'[ \t]+', ' ', texto)
     
-    # 4. Limpiar líneas vacías y dar formato básico
     lineas = [l.strip() for l in texto.splitlines() if l.strip()]
     texto_unido = " ".join(lineas)
     
-    # 5. Desduplicar fragmentos repetidos al final si aplica
     lineas_finales = []
     vistas = set()
     for linea in texto_unido.splitlines():
@@ -152,17 +178,21 @@ def limpiar_texto_profundo(texto: str) -> str:
 
     return "\n".join(lineas_finales)
 
-# ==========================================
-# 3. PARSER JERÁRQUICO DEFINITIVO
-# ==========================================
 def parse_hierarchical_structure(text: str) -> list:
-    """Parsea la estructura jerárquica tolerando fallos de OCR donde confunde I con 1."""
+    """
+    Parsea la estructura jerárquica de documentos legales tolerando errores de OCR.
+    
+    Args:
+        text: Texto del documento legal a parsear
+    
+    Returns:
+        Lista de diccionarios con estructura jerárquica (títulos, secciones, artículos)
+    """
     if not text or not isinstance(text, str):
         return [{"titulo": "General", "secciones": [{"seccion": "General", "articulos": []}]}]
 
     estructura = []
     
-    # Tolerante a OCR: acepta romanos (IVXLCDM) y números mezclados (ej. I11, III, etc.)
     patron_titulo = r'(?i)\b(T[IÍ]TULO\s+[IVXLCDM0-9]+)([\s\S]*?)(?=\bT[IÍ]TULO\s+[IVXLCDM0-9]+|\Z)'
     
     coincidencias = list(re.finditer(patron_titulo, text))
@@ -193,11 +223,18 @@ def parse_hierarchical_structure(text: str) -> list:
     return estructura
 
 def parsear_secciones_seguro(texto_titulo: str) -> list:
-    """Parsea secciones tolerando confusiones de OCR (ej. SECCION I1 en lugar de II)."""
+    """
+    Parsea secciones dentro de un título tolerando errores de OCR.
+    
+    Args:
+        texto_titulo: Texto contenido en un título
+    
+    Returns:
+        Lista de diccionarios con secciones y sus artículos
+    """
     if not texto_titulo or not isinstance(texto_titulo, str):
         return [{"seccion": "General", "articulos": extraer_articulos_seguro(texto_titulo)}]
 
-    # Patrón tolerante para secciones con números romanos o mezclas de OCR
     patron_seccion = r'(?i)\b(SECCI[OÓ]N\s+[IVXLCDM0-9]+)([\s\S]*?)(?=\bSECCI[OÓ]N\s+[IVXLCDM0-9]+|\Z)'
     
     coincidencias_secc = list(re.finditer(patron_seccion, texto_titulo))
@@ -230,7 +267,15 @@ def parsear_secciones_seguro(texto_titulo: str) -> list:
     return secciones
 
 def extraer_articulos_seguro(bloque_texto: str) -> list:
-    """Extrae artículos manejando numeración estándar."""
+    """
+    Extrae artículos de un bloque de texto con numeración estándar.
+    
+    Args:
+        bloque_texto: Texto que contiene artículos
+    
+    Returns:
+        Lista de diccionarios con número y texto de cada artículo
+    """
     articulos = []
     patron_articulo = r'(?i)\b(?:Art[ií]culo|Art\.?)\s*(\d+[°ºa-zA-Z]*)\s*[\.\-:]*'
     
@@ -265,15 +310,17 @@ def extraer_articulos_seguro(bloque_texto: str) -> list:
     return articulos
      
 
-# ==========================================
-# 4. PIPELINE DE PROCESAMIENTO E INDEXACIÓN
-# ==========================================
 PDF_DIRECTORY = Path("data/pdfs")
 RUTA_PERSISTENCIA = os.path.join("data", "chroma_db")
 NOMBRE_COLECCION = "constituciones_dominicanas"
 
 def indexar_constituciones():
-    """Procesa, limpia e indexa las constituciones de forma limpia e higiénica."""
+    """
+    Procesa, limpia e indexa constituciones en ChromaDB.
+    
+    Lee PDFs de constituciones, extrae texto, limpia artefactos de OCR,
+    parsea estructura jerárquica y genera embeddings para búsqueda semántica.
+    """
     if not PDF_DIRECTORY.exists():
         print(f"⚠️ El directorio '{PDF_DIRECTORY}' no existe. Creándolo...")
         PDF_DIRECTORY.mkdir(parents=True, exist_ok=True)
@@ -308,10 +355,7 @@ def indexar_constituciones():
                 print(f"⚠️ Advertencia: No se pudo extraer texto de {file_path.name}")
                 continue
 
-            # 1. Limpieza inicial del documento entero
             texto_preprocesado = limpiar_texto_profundo(raw_text)
-            
-            # 2. Parseo de la jerarquía
             estructura_documento = parse_hierarchical_structure(texto_preprocesado)
 
             for titulo_elem in estructura_documento:
@@ -323,7 +367,6 @@ def indexar_constituciones():
                     for articulo_elem in seccion_elem.get("articulos", []):
                         articulo_num = articulo_elem.get("numero_articulo", "S/N")
                         
-                        # 3. Limpieza final individual del artículo (sin concatenaciones duplicadas)
                         articulo_texto = limpiar_texto_profundo(articulo_elem.get("texto_completo", ""))
 
                         if not articulo_texto.strip():
@@ -361,4 +404,7 @@ def indexar_constituciones():
         print("No hay texto válido para indexar en ChromaDB.")
 
 if __name__ == "__main__":
+    """
+    Ejecuta el pipeline de indexación desde línea de comandos.
+    """
     indexar_constituciones()

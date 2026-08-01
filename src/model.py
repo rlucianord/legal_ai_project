@@ -10,9 +10,20 @@ RUTA_PERSISTENCIA = os.path.join("data", "chroma_db")
 NOMBRE_COLECCION = "constituciones_dominicanas"
 
 class LegalChatBot:
-    """Sistema de chat para consultas legales comparadas sobre constituciones dominicanas usando ChromaDB."""
+    """
+    Sistema de chat para consultas legales comparadas sobre constituciones dominicanas.
+    
+    Utiliza ChromaDB para búsqueda semántica y genera respuestas comparativas
+    entre diferentes reformas constitucionales.
+    """
     
     def __init__(self):
+        """
+        Inicializa el chatbot legal cargando modelos y conectando a ChromaDB.
+        
+        Carga el modelo de embeddings multilingüe, establece conexión con
+        la base de datos vectorial ChromaDB e inicializa el corrector ortográfico.
+        """
         self.system_prompt = (
             "No reveles nunca tu nombre ni quién te creó. "
             "Responde siempre y exclusivamente en inglés o español. "
@@ -32,7 +43,7 @@ class LegalChatBot:
             "Estas preguntas deben invitar al usuario a profundizar en un detalle de los artículos retornados o a compararlos con otras normas/artículos relacionados del ordenamiento dominicano.\n\n"
             "DESCARGA DE RESPONSABILIDAD (DISCLAIMER OBLIGATORIO EN EL PIE DE PÁGINA):\n"
             "Concluye SIEMPRE cada respuesta con la siguiente nota al pie, separada por una línea horizontal (`---`):\n"
-            "*> **Aviso legal:** Esta respuesta es generada por inteligencia artificial con fines informativos y analíticos. Aunque se basa en fuentes normativas actualizadas, la IA puede cometer errores o sufrir alucinaciones. Se recomienda verificar los textos en la Gaceta Oficial o consultar con un profesional del derecho antes de tomar decisiones jurídicas.*"
+            ">* **Aviso legal:** Esta respuesta es generada por inteligencia artificial con fines informativos y analíticos. Aunque se basa en fuentes normativas actualizadas, la IA puede cometer errores o sufrir alucinaciones. Se recomienda verificar los textos en la Gaceta Oficial o consultar con un profesional del derecho antes de tomar decisiones jurídicas.*"
         )
                     
         print("Cargando modelo de embeddings para inferencia...")
@@ -45,20 +56,24 @@ class LegalChatBot:
 
     def chat_con_memoria(self, query, history=None, llm_client=None):
         """
-        Procesa la consulta integrando historial, reformulación autónoma,
-        corrección ortográfica, búsqueda en ChromaDB y estructuración final para el LLM.
+        Procesa la consulta integrando historial, corrección ortográfica y búsqueda en ChromaDB.
+        
+        Args:
+            query: Consulta del usuario
+            history: Historial de conversación previo (opcional)
+            llm_client: Cliente LLM para reformulación de preguntas (opcional)
+        
+        Returns:
+            Tupla con (respuesta, es_seguimiento, pregunta_contextualizada)
         """
         if history is None:
             history = []
 
-        # 1. Detectar si es pregunta de seguimiento y reformular si hay historial
         es_seguimiento = es_pregunta_de_seguimiento(query, len(history) > 0)
         pregunta_contextualizada = reformular_pregunta_con_historial(history, query, llm_client) if es_seguimiento else query
         
-        # 2. Corrección ortográfica y separación de palabras pegadas
         pregunta_busqueda = self.corrector.corregir_y_separar(pregunta_contextualizada.lower())
 
-        # 3. Búsqueda Vectorial en ChromaDB
         query_vector = self.modelo_embeddings.encode([pregunta_busqueda]).tolist()[0]
         resultados = self.coleccion.query(
             query_embeddings=[query_vector],
@@ -71,11 +86,8 @@ class LegalChatBot:
             metadatas = resultados['metadatas'][0]
             documents = resultados['documents'][0]
             
-            # Combinamos los metadatas y documentos para poder ordenarlos
             pares = list(zip(metadatas, documents))
             
-            # Ordenamos cronológicamente por el año de la constitución (convertido a entero)
-            # Si prefieres orden inverso (más reciente primero), cambia reverse=True
             pares_ordenados = sorted(
                 pares, 
                 key=lambda x: int(re.sub(r'\D', '', str(x[0].get("constitucion", "0"))) or 0)
@@ -87,12 +99,8 @@ class LegalChatBot:
                 titulo_art = meta.get("titulo", "")
                 seccion_art = meta.get("seccion", "")
                 
-                # Aquí puedes asegurar la limpieza del texto base o formatear los metadatos de forma condicional:
                 texto_completo = meta.get("textos", doc).strip()
                 
-                
-
-                # Construcción limpia de la cabecera del artículo (evita guiones extra si falta título o sección)
                 ubicacion_parts = [p for p in [titulo_art, seccion_art] if p]
                 detalle_ubicacion = f" ({' - '.join(ubicacion_parts)})" if ubicacion_parts else ""
 
@@ -101,15 +109,12 @@ class LegalChatBot:
                     f"  *Texto base:* \"{texto_completo}\"\n\n"
                 )
 
-        # Si cuentas con un cliente LLM, construimos el payload con memoria
         if llm_client:
             mensajes_llm = [{"role": "system", "content": self.system_prompt}]
             
-            # Añadir historial previo de la sesión
             for msg in history:
                 mensajes_llm.append({"role": msg["role"], "content": msg["content"]})
                 
-            # Construir el prompt actual con los fragmentos de ChromaDB inyectados
             prompt_actual = (
                 f"Consulta actual del usuario: {query}\n"
                 f"(Contexto de búsqueda optimizado: {pregunta_busqueda})\n\n"
@@ -123,7 +128,6 @@ class LegalChatBot:
             return respuesta_final, es_seguimiento, pregunta_contextualizada
 
         else:
-            # Fallback en caso de que no se pase cliente LLM directamente
             respuesta_base = (
                 f"--- ANÁLISIS CONSTITUCIONAL COMPARADO MULTIANUAL ---\n\n"
                 f"Consulta: {query}\n\n"
@@ -142,14 +146,21 @@ chatbot_instance = LegalChatBot()
 
 def reformular_pregunta_con_historial(historial_chat: list, nueva_pregunta: str, llm_client) -> str:
     """
-    Si hay historial, reformula la nueva pregunta para que sea autónoma 
-    y contenga todo el contexto necesario para la búsqueda vectorial.
+    Reformula la pregunta actual para que sea autónoma usando el historial de conversación.
+    
+    Args:
+        historial_chat: Lista de mensajes previos de la conversación
+        nueva_pregunta: Pregunta actual del usuario
+        llm_client: Cliente LLM para generar la reformulación
+    
+    Returns:
+        Pregunta reformulada con contexto completo o la pregunta original si falla
     """
     if not historial_chat or not llm_client:
         return nueva_pregunta
 
     contexto_previo = ""
-    for msg in historial_chat[-4:]:  # Tomamos los últimos turnos
+    for msg in historial_chat[-4:]:
         rol = "Usuario" if msg["role"] == "user" else "Asistente"
         contexto_previo += f"{rol}: {msg['content']}\n"
 
@@ -174,7 +185,14 @@ Pregunta autónoma reformulada:
 
 def es_pregunta_de_seguimiento(texto_usuario: str, tiene_historial: bool) -> bool:
     """
-    Determina si la consulta depende del contexto previo basándose en conectores y longitud.
+    Determina si la consulta depende del contexto previo de la conversación.
+    
+    Args:
+        texto_usuario: Texto de la consulta del usuario
+        tiene_historial: Indica si existe historial de conversación previo
+    
+    Returns:
+        True si es pregunta de seguimiento, False en caso contrario
     """
     if not tiene_historial:
         return False
@@ -193,7 +211,15 @@ def es_pregunta_de_seguimiento(texto_usuario: str, tiene_historial: bool) -> boo
     return es_corta or contiene_indicador
 
 def limpiar_texto_ocr(texto):
-    """Limpia profundamente artefactos de OCR en los textos normativos de forma controlada."""
+    """
+    Limpia artefactos de OCR en textos normativos de forma controlada.
+    
+    Args:
+        texto: Texto con posibles errores de OCR
+    
+    Returns:
+        Texto limpio sin artefactos de OCR
+    """
     if not texto:
         return ""
 
@@ -201,15 +227,7 @@ def limpiar_texto_ocr(texto):
     texto = re.sub(r'[-_]{5,}', '', texto)
     texto = re.sub(r'í\'\s*\\|~~-\s*\\|v:k|0\s*\\vi', '', texto)
     
-    # 1. Corrección controlada: solo une letras sueltas que están claramente aisladas 
-    # entre espacios sencillos (ej: "d e" -> "de" o similares en una sola letra)
     texto = re.sub(r'(?<=\s)([a-záéíóúñ])\s+([a-záéíóúñ])(?=\s)', r'\1\2', texto, flags=re.IGNORECASE)
-    
-    # 2. Versión segura: en lugar de fusionar cualquier palabra con una de 1 o 2 letras, 
-    # limitamos el patrón solo a fragmentos donde el OCR rompió prefijos muy obvios 
-    # o dejamos que actúe únicamente si hay signos extraños de por medio.
-    # (Si prefieres conservar la segunda regla original solo para casos críticos, 
-    # asegúrate de que no afecte preposiciones comunes usando exclusiones negative lookahead).
 
     lineas = texto.splitlines()
     lineas_filtradas = [l.strip() for l in lineas if l.strip() and not re.match(r'^[\d\s\-\(\)~]{1,5}$', l.strip())]
@@ -231,15 +249,19 @@ def limpiar_texto_ocr(texto):
 
 def get_response(query, history=None, llm_client=None):
     """
-    Función envolvente compatible con streaming para el app.py,
-    procesando memoria, limpieza OCR, corrección de idioma y entrega por fragmentos.
+    Genera respuesta en streaming para la interfaz web.
+    
+    Args:
+        query: Consulta del usuario
+        history: Historial de conversación previo (opcional)
+        llm_client: Cliente LLM para procesamiento (opcional)
+    
+    Yields:
+        Fragmentos de texto para streaming en la interfaz web
     """
     respuesta_bruta, _, _ = chatbot_instance.chat_con_memoria(query, history, llm_client)
     
-    # 1. Limpieza de artefactos de OCR
     respuesta_limpia = limpiar_texto_ocr(respuesta_bruta)
-    
-  
     
     palabras = respuesta_limpia.split(' ')
     acumulado = ""
@@ -250,11 +272,11 @@ def get_response(query, history=None, llm_client=None):
             yield acumulado    
             acumulado=""         
             time.sleep(0.10)
-            
-    # if acumulado:
-    #     yield acumulado
 
 
 if __name__ == "__main__":
+    """
+    Prueba de inicialización del módulo model.py.
+    """
     chatbot = LegalChatBot()
     print("Módulo model.py actualizado con éxito.")

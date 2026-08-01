@@ -3,14 +3,23 @@ import chromadb
 from transformers import BertTokenizer, BertForQuestionAnswering, Trainer, TrainingArguments
 from datasets import Dataset
 from pathlib import Path
-from preprocessing import fix_common_errors
+from processfiles import fix_common_errors
 
 CHECKPOINT_DIR = "models/checkpoints"
 RUTA_PERSISTENCIA = os.path.join("data", "chroma_db")
 NOMBRE_COLECCION = "constituciones_dominicanas"
 
 def cargar_datos_desde_chroma():
-    """Extrae los documentos y metadatos directamente desde ChromaDB."""
+    """
+    Extrae documentos y metadatos desde ChromaDB.
+    
+    Returns:
+        Tupla con (lista documentos, lista metadatos)
+    
+    Raises:
+        FileNotFoundError: Si la base de datos ChromaDB no existe
+        ValueError: Si la colección no existe o está vacía
+    """
     if not Path(RUTA_PERSISTENCIA).exists():
         raise FileNotFoundError(f"La base de datos ChromaDB no existe en '{RUTA_PERSISTENCIA}'. Ejecuta primero 'processfiles.py'.")
     
@@ -21,7 +30,6 @@ def cargar_datos_desde_chroma():
     except Exception:
         raise ValueError(f"No se encontró la colección '{NOMBRE_COLECCION}' en ChromaDB.")
 
-    # Obtenemos todos los documentos, metadatos e IDs almacenados
     resultados = coleccion.get(include=["documents", "metadatas"])
     
     documents = resultados.get("documents", [])
@@ -33,7 +41,15 @@ def cargar_datos_desde_chroma():
     return documents, metadatas
 
 def prepare_dataset():
-    """Prepara el dataset para fine-tuning extrayendo la información directamente de ChromaDB."""
+    """
+    Prepara el dataset para fine-tuning desde ChromaDB.
+    
+    Returns:
+        Dataset de Hugging Face con datos preparados para entrenamiento
+    
+    Raises:
+        ValueError: Si no se pueden generar muestras válidas
+    """
     print("Cargando datos desde ChromaDB para entrenamiento...")
     documents, metadatas = cargar_datos_desde_chroma()
     
@@ -42,7 +58,6 @@ def prepare_dataset():
         if not texto_completo or not texto_completo.strip():
             continue
             
-        # Aplicar corrección por seguridad
         texto_corregido = fix_common_errors(texto_completo.strip())
         
         numero = meta.get("articulo", "S/N")
@@ -63,12 +78,27 @@ def prepare_dataset():
     return Dataset.from_list(data)
 
 def train_model(dataset, checkpoint_dir=CHECKPOINT_DIR):
-    """Entrena modelo BERT para QA y guarda checkpoints."""
+    """
+    Entrena modelo BERT español para Question Answering.
+    
+    Args:
+        dataset: Dataset de Hugging Face preparado para entrenamiento
+        checkpoint_dir: Directorio para guardar checkpoints del modelo
+    """
     print("Cargando modelo y tokenizer de BERT...")
     tokenizer = BertTokenizer.from_pretrained("dccuchile/bert-base-spanish-wwm-uncased")
     model = BertForQuestionAnswering.from_pretrained("dccuchile/bert-base-spanish-wwm-uncased")
     
     def preprocess_function(examples):
+        """
+        Preprocesa ejemplos para entrenamiento de QA.
+        
+        Args:
+            examples: Batch de ejemplos del dataset
+        
+        Returns:
+            Diccionario con inputs tokenizados y posiciones de respuesta
+        """
         questions = [q.strip() for q in examples["question"]]
         inputs = tokenizer(
             questions,
@@ -145,7 +175,12 @@ def train_model(dataset, checkpoint_dir=CHECKPOINT_DIR):
     print("¡Entrenamiento finalizado y checkpoints guardados!")
 
 def main():
-    """Función principal para ejecutar el entrenamiento utilizando ChromaDB."""
+    """
+    Función principal para ejecutar el entrenamiento del modelo.
+    
+    Orquesta la preparación del dataset desde ChromaDB y el entrenamiento
+    del modelo BERT español para Question Answering.
+    """
     print("Iniciando proceso de preparación y entrenamiento con ChromaDB...")
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     dataset = prepare_dataset()

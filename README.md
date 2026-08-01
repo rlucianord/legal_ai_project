@@ -9,9 +9,10 @@ Sistema de IA para consultas sobre la Constitución Dominicana utilizando proces
 
 - **Extracción de PDFs**: Procesamiento automático de constituciones en formato PDF
 - **Preprocesamiento Inteligente**: Normalización de texto y corrección de errores OCR
-- **Fine-tuning de BERT**: Entrenamiento de modelo multilingüe para Question Answering
-- **Búsqueda Semántica**: Indexación con FAISS y embeddings multilingües
-- **Chat Interactivo**: Sistema de consultas legales en lenguaje natural
+- **Fine-tuning de BERT**: Entrenamiento de modelo BERT español específico para Question Answering
+- **Búsqueda Semántica**: Indexación con ChromaDB y base de datos vectorial
+- **Integración ChromaDB**: Almacenamiento persistente de documentos y embeddings
+- **Procesamiento Eficiente**: Carga directa desde base de datos vectorial
 
 ## 🛠 Tech Stack
 
@@ -19,13 +20,15 @@ Sistema de IA para consultas sobre la Constitución Dominicana utilizando proces
 - **Python 3.8+**: Lenguaje principal del proyecto
 - **PyTorch**: Framework de deep learning para entrenamiento de modelos
 - **Transformers (Hugging Face)**: Modelos pre-entrenados BERT para NLP
-- **FAISS**: Biblioteca de búsqueda similitud vectorial eficiente
+- **ChromaDB**: Base de datos vectorial para almacenamiento y búsqueda semántica
+- **BERT Español**: Modelo `dccuchile/bert-base-spanish-wwm-uncased` optimizado para español
 
 ### NLP & Text Processing
-- **sentence-transformers**: Embeddings multilingües para búsqueda semántica
+- **ChromaDB**: Base de datos vectorial con embeddings integrados
 - **pdfminer.six**: Extracción de texto desde archivos PDF
 - **PyPDF2**: Biblioteca alternativa para procesamiento de PDF
 - **Regex**: Pattern matching para división de artículos y secciones
+- **Preprocessing**: Corrección de errores OCR y normalización de texto
 
 ### Data & ML
 - **pandas**: Manipulación de datos estructurados
@@ -34,26 +37,29 @@ Sistema de IA para consultas sobre la Constitución Dominicana utilizando proces
 - **datasets (Hugging Face)**: Gestión de datasets para entrenamiento
 
 ### Architecture Pattern
-- **Question Answering**: Extractive QA con BERT multilingüe
-- **Retrieval-Augmented Generation**: Búsqueda semántica + respuesta precisa
+- **Question Answering**: Extractive QA con BERT español específico
+- **Vector Database**: ChromaDB para almacenamiento y recuperación semántica
 - **Modular Design**: Separación clara entre procesamiento, entrenamiento e inferencia
+- **Persistent Storage**: Base de datos vectorial persistente para consultas eficientes
 
 ## 📋 Requisitos del Sistema
 
-- **Python**: 3.8 o superior
+- **Python**: 12
 - **Sistema Operativo**: Windows, Linux, o macOS
 - **Hardware**: 
   - CPU: Procesador moderno (mínimo 4 cores recomendado)
   - RAM: 8GB mínimo, 16GB recomendado
   - GPU: Opcional pero recomendada para entrenamiento (NVIDIA con CUDA)
-- **Espacio en Disco**: 5GB+ para modelos y datos
+- **Espacio en Disco**: 15GB+ para modelos y datos
 
 ## 🔧 Configuración del Entorno
 
 ### 1. Clonar el Repositorio
 
 ```bash
-git clone https://github.com/rlucianord/legal_ai_project/edit/main/README.md
+# Clonar el repositorio en tu directorio Source
+cd C:\Users\ruben\Source
+git clone https://github.com/rlucianord/legal_ai_project.git
 cd legal_ai_project
 ```
 
@@ -100,14 +106,14 @@ python -c "import torch; print(f'CUDA disponible: {torch.cuda.is_available()}')"
 legal_ai_project/
 ├── data/
 │   ├── CONSTITUCION/          # Archivos PDF de constituciones (1994, 2002, 2010, 2015, 2024)
-│   └── constituciones.jsonl   # Dataset procesado en formato JSONL
+│   └── chroma_db/             # Base de datos vectorial ChromaDB persistente
 ├── models/
-│   └── checkpoints/           # Modelos fine-tuned de BERT para QA
+│   └── checkpoints/           # Modelos fine-tuned de BERT español para QA
 ├── src/
 │   ├── __init__.py            # Init del paquete
 │   ├── dataset_builder.py     # Extracción y procesamiento de PDFs
 │   ├── preprocessing.py       # Limpieza y normalización de texto
-│   ├── modeltrainer.py        # Entrenamiento y sistema de chat
+│   ├── modeltrainer.py        # Entrenamiento con ChromaDB
 │   └── utils.py               # Utilidades generales
 ├── notebooks/                 # Jupyter notebooks para análisis exploratorio
 ├── .venv/                     # Entorno virtual Python (gitignore)
@@ -119,7 +125,7 @@ legal_ai_project/
 
 ### Paso 1: Preparar Datos
 
-Coloca los archivos PDF de las constituciones en `data/CONSTITUCION/` con el año en el nombre (ej: `constitucion_1994.pdf`, `constitucion_2002.pdf`).
+Coloca los archivos PDF de las constituciones en `data/pdfs/` con el año en el nombre (ej: `constitucion_1994.pdf`, `constitucion_2002.pdf`).
 
 ```bash
 cd src
@@ -127,9 +133,11 @@ python dataset_builder.py
 ```
 
 Este script:
+- Coloca los documentos pdf en el directorio, si los quieres ordenados, ponles el año en el nombre (ej: `constitucion_1994.pdf`)
+- Se han procesado al menos 4 constituciones, lo que queremos es seguir creciendo, con Códigos penales, sentencias de tribunales y Categoría de estas para enriquecer el Chat.
 - Procesa todos los PDFs encontrados en el directorio
 - Extrae y estructura artículos por secciones
-- Genera `data/constituciones.jsonl` con el dataset procesado
+- Genera la base de datos ChromaDB en `data/chroma_db/` con embeddings y metadatos
 
 ### Paso 2: Entrenar Modelo
 
@@ -138,28 +146,34 @@ python modeltrainer.py
 ```
 
 El proceso de entrenamiento incluye:
-1. **Preparación del Dataset**: Carga y tokenización para fine-tuning
-2. **Entrenamiento BERT**: Fine-tuning de modelo multilingüe para QA
-3. **Indexación FAISS**: Construcción de índice semántico con embeddings
+1. **Carga desde ChromaDB**: Extracción directa de documentos y metadatos
+2. **Preparación del Dataset**: Tokenización para fine-tuning con BERT español
+3. **Entrenamiento BERT**: Fine-tuning de modelo `dccuchile/bert-base-spanish-wwm-uncased`
 4. **Guardado de Modelo**: Almacenamiento en `models/checkpoints/`
 
-**Nota**: El entrenamiento puede tomar varias horas dependiendo del hardware.
+**Nota**: El entrenamiento puede tomar varias horas dependiendo del hardware. Asegúrate de haber ejecutado primero `dataset_builder.py` para crear la base de datos ChromaDB.
 
-### Paso 3: Usar el Sistema de Chat
+### Paso 3: Usar el Sistema de Consultas
+
+El sistema ahora utiliza ChromaDB para consultas eficientes. Los documentos se cargan directamente desde la base de datos vectorial:
 
 ```python
-from src.modeltrainer import LegalChatBot
+from src.modeltrainer import cargar_datos_desde_chroma
 
-# Inicializar el chatbot
-chatbot = LegalChatBot()
+# Cargar documentos desde ChromaDB
+documents, metadatas = cargar_datos_desde_chroma()
+print(f"Se cargaron {len(documents)} documentos desde ChromaDB")
 
-# Realizar consultas
-respuesta = chatbot.chat("¿Quién ejerce la soberanía nacional?")
-print(respuesta)
+# Para consultas con el modelo entrenado:
+from transformers import pipeline
+qa_pipeline = pipeline("question-answering", model="models/checkpoints", tokenizer="models/checkpoints")
 
-# Otra consulta
-respuesta = chatbot.chat("¿Cuáles son los derechos del trabajador?")
-print(respuesta)
+# Realizar consulta
+result = qa_pipeline({
+    "question": "¿Quién ejerce la soberanía nacional?",
+    "context": documents[0]  # Usar documento relevante de ChromaDB
+})
+print(result['answer'])
 ```
 
 ## 📚 Documentación de Funciones
@@ -179,28 +193,31 @@ print(respuesta)
 
 ### modeltrainer.py
 
-- **`prepare_dataset(data_path)`**: Prepara dataset para fine-tuning de BERT
-- **`train_model(dataset, checkpoint_dir)`**: Entrena modelo BERT para QA
-- **`build_index(data_path)`**: Construye índice FAISS con embeddings multilingües
-- **`load_qa_pipeline(checkpoint_dir)`**: Carga pipeline de question answering
-- **`LegalChatBot`**: Clase principal para el sistema de consultas
+- **`cargar_datos_desde_chroma()`**: Extrae documentos y metadatos desde ChromaDB
+- **`prepare_dataset()`**: Prepara dataset para fine-tuning desde ChromaDB
+- **`train_model(dataset, checkpoint_dir)`**: Entrena modelo BERT español para QA
+- **`main()`**: Función principal que orquesta el proceso de entrenamiento
 
 ## 🔍 Arquitectura del Sistema
 
 ```
-PDF Input → Text Extraction → Preprocessing → Structured Data (JSONL)
+PDF Input → Text Extraction → Preprocessing → ChromaDB Storage
                                                     ↓
-                                            Dataset Preparation
+                                            Vector Embeddings Generation
                                                     ↓
-                                            BERT Fine-tuning
+                                            Persistent Vector Database
                                                     ↓
-                                            Embedding Generation
+                                            Dataset Preparation from ChromaDB
                                                     ↓
-                                            FAISS Indexing
+                                            BERT Spanish Fine-tuning
+                                                    ↓
+                                            Model Checkpoint Storage
                                                     ↓
                                             Query Processing
                                                     ↓
-                                            Semantic Search + QA
+                                            Document Retrieval from ChromaDB
+                                                    ↓
+                                            Question Answering
                                                     ↓
                                             Response Generation
 ```
@@ -224,13 +241,22 @@ training_args = TrainingArguments(
 )
 ```
 
-### Cambiar Modelo de Embeddings
+### Cambiar Modelo BERT
+
+Edita `src/modeltrainer.py` en la función `train_model`:
 
 ```python
-# Opciones multilingües:
-embedder = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")  # Actual
-embedder = SentenceTransformer("distiluse-base-multilingual-cased-v2")   # Más rápido
-embedder = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")  # Más preciso
+# Modelo actual (español específico):
+tokenizer = BertTokenizer.from_pretrained("dccuchile/bert-base-spanish-wwm-uncased")
+model = BertForQuestionAnswering.from_pretrained("dccuchile/bert-base-spanish-wwm-uncased")
+
+# Otras opciones para español:
+# tokenizer = BertTokenizer.from_pretrained("bert-base-spanish-wwm-cased")
+# model = BertForQuestionAnswering.from_pretrained("bert-base-spanish-wwm-cased")
+
+# Modelo multilingüe (menos específico para español):
+# tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased")
+# model = BertForQuestionAnswering.from_pretrained("bert-base-multilingual-cased")
 ```
 
 ## 🐛 Solución de Problemas
@@ -239,18 +265,22 @@ embedder = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")  # Más 
 - Reduce `per_device_train_batch_size` en `modeltrainer.py`
 - Usa CPU eliminando `.to(device)` o usa `device='cpu'`
 
-### Error: "File not found"
+### Error: "File not found" o "ChromaDB no existe"
 - Verifica que los PDFs estén en `data/CONSTITUCION/`
 - Asegúrate de que los nombres contengan el año (ej: `1994`)
+- Ejecuta primero `dataset_builder.py` para crear la base de datos ChromaDB
+- Verifica que `data/chroma_db/` exista y contenga la colección `constituciones_dominicanas`
 
 ### Error: "Module not found"
 - Activa el entorno virtual: `.venv\Scripts\activate`
 - Reinstala dependencias: `pip install -r requirements.txt`
 
 ### Resultados de baja calidad
-- Aumenta `num_train_epochs` a 3-5
-- Usa un modelo base más grande: `bert-large-multilingual-cased`
-- Aumenta el dataset con más constituciones
+- Aumenta `num_train_epochs` a 3-5 en `modeltrainer.py`
+- Usa un modelo BERT español más grande: `bert-base-spanish-wwm-cased`
+- Aumenta el dataset con más documentos legales
+- Mejora el preprocesamiento y corrección de errores en `preprocessing.py`
+- Ajusta `max_length` en la tokenización (actualmente 384)
 
 ## 🤝 Contribución
 
