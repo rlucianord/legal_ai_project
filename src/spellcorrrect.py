@@ -59,10 +59,10 @@ class CorrectorConsultas:
         Corrige oraciones completas (incluyendo palabras pegadas por error del usuario) 
         utilizando lookup_compound, que respeta la estructura de la frase.
         """
-        # lookup_compound maneja tanto faltas ortográficas como separación de palabras pegadas en frases
+        # lookup_compound utiliza max_edit_distance en lugar de max_dictionary_edit_distance
         sugerencias = self.sym_spell.lookup_compound(
             texto, 
-            max_dictionary_edit_distance=2
+            max_edit_distance=2
         )
         
         if sugerencias:
@@ -70,7 +70,6 @@ class CorrectorConsultas:
         
         # Si por alguna razón no devuelve nada, devolvemos el texto original para no perderlo
         return texto
-        
 # ==========================================
 # PRUEBA DE INTEGRACIÓN
 # ==========================================

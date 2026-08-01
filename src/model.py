@@ -88,7 +88,9 @@ class LegalChatBot:
                 seccion_art = meta.get("seccion", "")
                 
                 # Aquí puedes asegurar la limpieza del texto base o formatear los metadatos de forma condicional:
-                texto_completo = CorrectorConsultas.corregir_y_separar (meta.get("textos", doc).strip())
+                texto_completo = meta.get("textos", doc).strip()
+                
+                
 
                 # Construcción limpia de la cabecera del artículo (evita guiones extra si falta título o sección)
                 ubicacion_parts = [p for p in [titulo_art, seccion_art] if p]
