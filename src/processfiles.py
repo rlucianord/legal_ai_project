@@ -103,47 +103,41 @@ def fix_common_errors(text: str) -> str:
 
 def limpiar_texto_profundo(texto: str) -> str:
     """
-    Función de limpieza centralizada:
-    - Remueve ruido de escaneo/marcas de agua/cabeceras.
-    - Une letras sueltas dentro de palabras.
-    - Estructura saltos de línea para numerales y elimina repeticiones.
+    Función de limpieza centralizada y segura:
+    - Remueve ruido de escaneo/marcas de agua.
+    - Corrige errores conocidos de OCR sin fusionar palabras válidas.
     """
-    if not texto:
+    if not texto or not isinstance(texto, str):
         return ""
 
-    texto = normalize_spanish(texto)
-    texto = fix_common_errors(texto)
+    # Asegurar que las funciones auxiliares no devuelvan None
+    texto = normalize_spanish(texto) or ""
+    texto = fix_common_errors(texto) or ""
 
-    # 1. Eliminar ruido de marcas, páginas y cabeceras de Asamblea Nacional
+    # Blindaje extra por si acaso alguna función externa alteró el tipo
+    if not isinstance(texto, str):
+        texto = str(texto)
+
+    # 1. Eliminar ruido de marcas, páginas y cabeceras
     texto = re.sub(r'\b\d{1,3}\s*[-–—_]*\s*ASAMBLEA NACIONAL\b', '', texto, flags=re.IGNORECASE)
     texto = re.sub(r'[-_]{5,}', '', texto)
     texto = re.sub(r'^\s*-\s*\d+\s*-\s*$', '', texto, re.MULTILINE)
     texto = re.sub(r'^(Página|Pag\.|Pág\.)\s*\d+(\s*de\s*\d+)?$', '', texto, re.IGNORECASE | re.MULTILINE)
     
-    # 2. Recomponer palabras cortadas por guiones o letras separadas por espacios (ej: "i gualdad")
+    # 2. Reparar únicamente guiones de corte de línea al final de la línea
     texto = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texto)
-    texto = re.sub(r'(?<=\b[a-záéíóúñ])\s+([a-záéíóúñ])\s+(?=[a-záéíóúñ]\b)', r'\1', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'\b([a-z]+)\s+([a-z]{1,2})\b(?=\s+[a-z]+)', r'\1\2', texto, flags=re.IGNORECASE)
-    # Busca una letra que simule el '1' seguida de un 9 y dos caracteres más (dígitos o letras)
-    texto = re.sub(r'\b[klI1][9g]\s*([0-9a-z]{2})\b', r'19\1', texto, flags=re.IGNORECASE)
     
-    # Correcciones específicas para terminaciones comunes como 'k9 a' (1940) o similares
-    texto = re.sub(r'\bk9\s*a\b', '1940', texto, flags=re.IGNORECASE) # Ajusta según el año base si es constante
+    RANGO_ANIO = "1940" 
+    texto = re.sub(r'\bk9\s*a\b', RANGO_ANIO, texto, flags=re.IGNORECASE)
     
-    texto_limpio = re.sub(r'\s+', ' ', texto)
-    # Patrón flexible para capturar variaciones comunes de OCR en los años 19xx (ej. k9 a, l950, etc.)
+    # 3. Normalizar espacios múltiples a un solo espacio de forma segura
+    texto = re.sub(r'[ \t]+', ' ', texto)
     
-    texto_estructurado = re.sub(r'\s+(\d{1,2}\))', r'\n\1', texto_limpio)
-
-
-    # 3. Unir saltos de línea de párrafos rotos y normalizar espacios
-    lineas = [ l.strip() for l in texto_estructurado.splitlines() if l.strip()]
-    # lineas = [  l.strip() for l in texto.splitlines() if l.strip()]
+    # 4. Limpiar líneas vacías y dar formato básico
+    lineas = [l.strip() for l in texto.splitlines() if l.strip()]
     texto_unido = " ".join(lineas)
-   
-    # 4. Dar formato de línea a los numerales (1), 2), 3), etc.)
     
-    # 5. Desduplicar fragmentos de texto repetidos al final
+    # 5. Desduplicar fragmentos repetidos al final si aplica
     lineas_finales = []
     vistas = set()
     for linea in texto_unido.splitlines():
@@ -159,32 +153,37 @@ def limpiar_texto_profundo(texto: str) -> str:
     return "\n".join(lineas_finales)
 
 # ==========================================
-# 3. PARSER JERÁRQUICO CORREGIDO
+# 3. PARSER JERÁRQUICO DEFINITIVO
 # ==========================================
 def parse_hierarchical_structure(text: str) -> list:
-    """Parsea la estructura jerárquica de forma segura usando búsqueda secuencial."""
-    # Para simplificar y mantener la robustez jurídica, detectamos bloques de artículos 
-    # manteniendo el contexto del Título y Sección actual de manera incremental.
-    
+    """Parsea la estructura jerárquica tolerando fallos de OCR donde confunde I con 1."""
+    if not text or not isinstance(text, str):
+        return [{"titulo": "General", "secciones": [{"seccion": "General", "articulos": []}]}]
+
     estructura = []
     
-    # Dividir primero por Títulos de manera limpia
-    patron_titulo = r'(?i)\b(T[IÍ]TULO\s+[IVXLCDM]+\b[^.\n]*)'
-    fragmentos_titulos = re.split(patron_titulo, text)
+    # Tolerante a OCR: acepta romanos (IVXLCDM) y números mezclados (ej. I11, III, etc.)
+    patron_titulo = r'(?i)\b(T[IÍ]TULO\s+[IVXLCDM0-9]+)([\s\S]*?)(?=\bT[IÍ]TULO\s+[IVXLCDM0-9]+|\Z)'
     
-    if len(fragmentos_titulos) <= 1:
-        return [{"titulo": "General", "secciones": [{"seccion": "General", "articulos": extraer_articulos_seguro(text)}]}]
+    coincidencias = list(re.finditer(patron_titulo, text))
     
-    preambulo = fragmentos_titulos[0].strip()
+    if not coincidencias:
+        return [{
+            "titulo": "General", 
+            "secciones": [{"seccion": "General", "articulos": extraer_articulos_seguro(text)}]
+        }]
+    
+    primer_inicio = coincidencias[0].start()
+    preambulo = text[:primer_inicio].strip()
     if preambulo:
         estructura.append({
             "titulo": "Preámbulo / Disposiciones Preliminares",
             "secciones": [{"seccion": "General", "articulos": extraer_articulos_seguro(preambulo)}]
         })
     
-    for i in range(1, len(fragmentos_titulos), 2):
-        nombre_titulo = fragmentos_titulos[i].strip()
-        contenido_titulo = fragmentos_titulos[i+1] if (i+1) < len(fragmentos_titulos) else ""
+    for match in coincidencias:
+        nombre_titulo = match.group(1).strip()
+        contenido_titulo = match.group(2).strip()
         
         estructura.append({
             "titulo": nombre_titulo,
@@ -194,32 +193,45 @@ def parse_hierarchical_structure(text: str) -> list:
     return estructura
 
 def parsear_secciones_seguro(texto_titulo: str) -> list:
-    """Divide el contenido de un Título en Secciones de forma segura."""
-    patron_seccion = r'(?i)\b(SECCI[OÓ]N\s+(?:[IVXLCDM]+|[A-ZÁÉÍÓÚÑ]+))\b'
-    fragmentos_secciones = re.split(patron_seccion, texto_titulo)
-    
-    if len(fragmentos_secciones) <= 1:
+    """Parsea secciones tolerando confusiones de OCR (ej. SECCION I1 en lugar de II)."""
+    if not texto_titulo or not isinstance(texto_titulo, str):
         return [{"seccion": "General", "articulos": extraer_articulos_seguro(texto_titulo)}]
+
+    # Patrón tolerante para secciones con números romanos o mezclas de OCR
+    patron_seccion = r'(?i)\b(SECCI[OÓ]N\s+[IVXLCDM0-9]+)([\s\S]*?)(?=\bSECCI[OÓ]N\s+[IVXLCDM0-9]+|\Z)'
+    
+    coincidencias_secc = list(re.finditer(patron_seccion, texto_titulo))
+    
+    if not coincidencias_secc:
+        return [{
+            "seccion": "General",
+            "articulos": extraer_articulos_seguro(texto_titulo)
+        }]
     
     secciones = []
-    texto_inicial = fragmentos_secciones[0].strip()
+    
+    primer_inicio = coincidencias_secc[0].start()
+    texto_inicial = texto_titulo[:primer_inicio].strip()
     if texto_inicial:
-        secciones.append({"seccion": "General", "articulos": extraer_articulos_seguro(texto_inicial)})
-        
-    for i in range(1, len(fragmentos_secciones), 2):
-        nombre_seccion = fragmentos_secciones[i].strip()
-        contenido_seccion = fragmentos_secciones[i+1] if (i+1) < len(fragmentos_secciones) else ""
         secciones.append({
-            "seccion": nombre_seccion, 
+            "seccion": "General",
+            "articulos": extraer_articulos_seguro(texto_inicial)
+        })
+        
+    for match in coincidencias_secc:
+        nombre_seccion = match.group(1).strip()
+        contenido_seccion = match.group(2).strip()
+        
+        secciones.append({
+            "seccion": nombre_seccion,
             "articulos": extraer_articulos_seguro(contenido_seccion)
         })
         
     return secciones
 
 def extraer_articulos_seguro(bloque_texto: str) -> list:
-    """Extrae artículos usando finditer para evitar desajustes de índices por ruido de OCR."""
+    """Extrae artículos manejando numeración estándar."""
     articulos = []
-    # Patrón estricto para capturar la palabra Artículo y su número identificador
     patron_articulo = r'(?i)\b(?:Art[ií]culo|Art\.?)\s*(\d+[°ºa-zA-Z]*)\s*[\.\-:]*'
     
     matches = list(re.finditer(patron_articulo, bloque_texto))
@@ -229,7 +241,6 @@ def extraer_articulos_seguro(bloque_texto: str) -> list:
             return [{"numero_articulo": "S/N", "texto_completo": bloque_texto.strip()}]
         return []
     
-    # Texto antes del primer artículo (introducción)
     texto_suelto = bloque_texto[:matches[0].start()].strip()
     if texto_suelto:
         articulos.append({"numero_articulo": "Introducción", "texto_completo": texto_suelto})
@@ -238,7 +249,6 @@ def extraer_articulos_seguro(bloque_texto: str) -> list:
         num_art = match.group(1).strip()
         inicio_texto = match.end()
         
-        # El fin del artículo actual es el inicio del siguiente, o el final del bloque
         if idx + 1 < len(matches):
             fin_texto = matches[idx + 1].start()
         else:
@@ -253,6 +263,7 @@ def extraer_articulos_seguro(bloque_texto: str) -> list:
             })
             
     return articulos
+     
 
 # ==========================================
 # 4. PIPELINE DE PROCESAMIENTO E INDEXACIÓN

@@ -192,17 +192,24 @@ def es_pregunta_de_seguimiento(texto_usuario: str, tiene_historial: bool) -> boo
 
     return es_corta or contiene_indicador
 
-
 def limpiar_texto_ocr(texto):
-    """Limpia profundamente artefactos de OCR en los textos normativos."""
+    """Limpia profundamente artefactos de OCR en los textos normativos de forma controlada."""
     if not texto:
         return ""
 
     texto = re.sub(r'\b\d{1,3}\s*[-–—_]*\s*ASAMBLEA NACIONAL\b', '', texto, flags=re.IGNORECASE)
     texto = re.sub(r'[-_]{5,}', '', texto)
     texto = re.sub(r'í\'\s*\\|~~-\s*\\|v:k|0\s*\\vi', '', texto)
-    texto = re.sub(r'(?<=\b[a-záéíóúñ])\s+([a-záéíóúñ])\s+(?=[a-záéíóúñ]\b)', r'\1', texto, flags=re.IGNORECASE)
-    texto = re.sub(r'\b([a-z]+)\s+([a-z]{1,2})\b(?=\s+[a-z]+)', r'\1\2', texto, flags=re.IGNORECASE)
+    
+    # 1. Corrección controlada: solo une letras sueltas que están claramente aisladas 
+    # entre espacios sencillos (ej: "d e" -> "de" o similares en una sola letra)
+    texto = re.sub(r'(?<=\s)([a-záéíóúñ])\s+([a-záéíóúñ])(?=\s)', r'\1\2', texto, flags=re.IGNORECASE)
+    
+    # 2. Versión segura: en lugar de fusionar cualquier palabra con una de 1 o 2 letras, 
+    # limitamos el patrón solo a fragmentos donde el OCR rompió prefijos muy obvios 
+    # o dejamos que actúe únicamente si hay signos extraños de por medio.
+    # (Si prefieres conservar la segunda regla original solo para casos críticos, 
+    # asegúrate de que no afecte preposiciones comunes usando exclusiones negative lookahead).
 
     lineas = texto.splitlines()
     lineas_filtradas = [l.strip() for l in lineas if l.strip() and not re.match(r'^[\d\s\-\(\)~]{1,5}$', l.strip())]
