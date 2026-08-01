@@ -1,71 +1,70 @@
 import os
-import json
-import faiss
-from sentence_transformers import SentenceTransformer
+import chromadb
 from transformers import BertTokenizer, BertForQuestionAnswering, Trainer, TrainingArguments
 from datasets import Dataset
 from pathlib import Path
 from preprocessing import fix_common_errors
 
 CHECKPOINT_DIR = "models/checkpoints"
-INDEX_FILE = "data/faiss_constitution.index"
-METADATA_FILE = "data/faiss_metadata.json"
+RUTA_PERSISTENCIA = os.path.join("data", "chroma_db")
+NOMBRE_COLECCION = "constituciones_dominicanas"
 
-def prepare_dataset(data_path="data/constituciones.jsonl"):
-    """Prepara dataset para fine-tuning desde archivo JSONL adaptado a la jerarquía completa."""
-    if not Path(data_path).exists():
-        raise FileNotFoundError(f"Dataset no encontrado: {data_path}")
+def cargar_datos_desde_chroma():
+    """Extrae los documentos y metadatos directamente desde ChromaDB."""
+    if not Path(RUTA_PERSISTENCIA).exists():
+        raise FileNotFoundError(f"La base de datos ChromaDB no existe en '{RUTA_PERSISTENCIA}'. Ejecuta primero 'processfiles.py'.")
+    
+    cliente = chromadb.PersistentClient(path=RUTA_PERSISTENCIA)
+    
+    try:
+        coleccion = cliente.get_collection(name=NOMBRE_COLECCION)
+    except Exception:
+        raise ValueError(f"No se encontró la colección '{NOMBRE_COLECCION}' en ChromaDB.")
+
+    # Obtenemos todos los documentos, metadatos e IDs almacenados
+    resultados = coleccion.get(include=["documents", "metadatas"])
+    
+    documents = resultados.get("documents", [])
+    metadatas = resultados.get("metadatas", [])
+
+    if not documents:
+        raise ValueError("La colección en ChromaDB está vacía.")
+
+    return documents, metadatas
+
+def prepare_dataset():
+    """Prepara el dataset para fine-tuning extrayendo la información directamente de ChromaDB."""
+    print("Cargando datos desde ChromaDB para entrenamiento...")
+    documents, metadatas = cargar_datos_desde_chroma()
     
     data = []
-    with open(data_path, encoding="utf-8") as f:
-        for line in f:
-            obj = json.loads(line)
+    for texto_completo, meta in zip(documents, metadatas):
+        if not texto_completo or not texto_completo.strip():
+            continue
             
-            articulo_obj = obj.get("articulo", {})
-            partes = articulo_obj.get("parte", articulo_obj.get("partes", []))
-            
-            piezas = []
-            if isinstance(partes, list):
-                for p in partes:
-                    if isinstance(p, str) and p.strip():
-                        piezas.append(p.strip())
-                    elif isinstance(p, dict):
-                        txt_parte = p.get('texto', '').strip()
-                        if txt_parte:
-                            piezas.append(txt_parte)
-            elif isinstance(partes, str) and partes.strip():
-                piezas.append(partes.strip())
-                
-            articulo_texto = " ".join(piezas).strip()
-            if not articulo_texto:
-                articulo_texto = articulo_obj.get("texto_completo", "").strip()
-                
-            if not articulo_texto:
-                continue
-                
-            articulo_texto = fix_common_errors(articulo_texto)
-                
-            numero = articulo_obj.get("numero", "S/N")
-            constitucion = obj.get("constitucion", "Desconocida")
+        # Aplicar corrección por seguridad
+        texto_corregido = fix_common_errors(texto_completo.strip())
+        
+        numero = meta.get("articulo", "S/N")
+        constitucion = meta.get("constitucion", "Desconocida")
 
-            answer_text = articulo_texto
-            answer_start = articulo_texto.find(answer_text) if answer_text else 0
-            if answer_start == -1:
-                answer_start = 0
+        answer_text = texto_corregido
+        answer_start = 0
 
-            data.append({
-                "context": articulo_texto,
-                "question": f"¿Qué establece el artículo {numero} de la constitución dominicana de {constitucion}?",
-                "answers": {"text": [answer_text], "answer_start": [answer_start]}
-            })
-            
+        data.append({
+            "context": texto_corregido,
+            "question": f"¿Qué establece el artículo {numero} de la constitución dominicana de {constitucion}?",
+            "answers": {"text": [answer_text], "answer_start": [answer_start]}
+        })
+        
     if not data:
-        raise ValueError("El dataset está vacío o no se pudieron extraer artículos válidos.")
+        raise ValueError("No se pudieron generar muestras válidas para el dataset.")
         
     return Dataset.from_list(data)
 
 def train_model(dataset, checkpoint_dir=CHECKPOINT_DIR):
     """Entrena modelo BERT para QA y guarda checkpoints."""
+    print("Cargando modelo y tokenizer de BERT...")
     tokenizer = BertTokenizer.from_pretrained("dccuchile/bert-base-spanish-wwm-uncased")
     model = BertForQuestionAnswering.from_pretrained("dccuchile/bert-base-spanish-wwm-uncased")
     
@@ -121,6 +120,7 @@ def train_model(dataset, checkpoint_dir=CHECKPOINT_DIR):
         inputs["end_positions"] = end_positions
         return inputs
 
+    print("Tokenizando el dataset para entrenamiento...")
     tokenized_dataset = dataset.map(preprocess_function, batched=True, remove_columns=dataset.column_names)
 
     training_args = TrainingArguments(
@@ -138,97 +138,19 @@ def train_model(dataset, checkpoint_dir=CHECKPOINT_DIR):
         train_dataset=tokenized_dataset
     )
 
+    print("Iniciando entrenamiento del modelo...")
     trainer.train()
     trainer.save_model(checkpoint_dir)
     tokenizer.save_pretrained(checkpoint_dir)
-
-def build_index(data_path="data/constituciones.jsonl"):
-    """Carga o construye el índice FAISS integrando la jerarquía completa y limpiando errores."""
-    embedder = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
-    
-    if os.path.exists(INDEX_FILE) and os.path.exists(METADATA_FILE):
-        print("Cargando índice FAISS y metadatos desde el disco...")
-        index = faiss.read_index(INDEX_FILE)
-        
-        with open(METADATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            texts = data["texts"]
-            metadata = data["metadata"]
-            
-        return embedder, index, texts, metadata
-
-    if not Path(data_path).exists():
-        raise FileNotFoundError(f"Dataset no encontrado: {data_path}")
-    
-    print("Construyendo índice FAISS con estructura jerárquica y texto corregido...")
-    index = faiss.IndexFlatL2(768)
-    texts = []
-    metadata = []
-    
-    with open(data_path, encoding="utf-8") as f:
-        for line in f:
-            obj = json.loads(line)
-            
-            anio_constitucion = obj.get("constitucion", "Desconocido")
-            titulo_art = obj.get("titulo", "")
-            capitulo_art = obj.get("capitulo", "")
-            seccion_art = obj.get("seccion", "")
-            
-            articulo_data = obj.get("articulo", {})
-            num_articulo = articulo_data.get("numero", "Desconocido")
-            
-            piezas_texto = []
-            partes = articulo_data.get("partes", articulo_data.get("parte", []))
-            
-            if isinstance(partes, list):
-                for parte in partes:
-                    if isinstance(parte, str) and parte.strip():
-                        piezas_texto.append(parte.strip())
-                    elif isinstance(parte, dict):
-                        txt_val = parte.get('texto', '').strip()
-                        if txt_val:
-                            piezas_texto.append(txt_val)
-            elif isinstance(partes, str) and partes.strip():
-                piezas_texto.append(partes.strip())
-            
-            texto_completo = " ".join(piezas_texto).strip()
-            if not texto_completo:
-                texto_completo = articulo_data.get("texto_completo", "").strip()
-            
-            if not texto_completo:
-                continue
-                
-            texto_completo = fix_common_errors(texto_completo)
-                
-            texts.append(texto_completo)
-            metadata.append({
-                "constitucion": anio_constitucion,
-                "titulo": titulo_art,
-                "capitulo": capitulo_art,
-                "seccion": seccion_art,
-                "articulo": {"numero": num_articulo},
-                "texto": texto_completo
-            })
-            
-            emb = embedder.encode([texto_completo])
-            index.add(emb)
-
-    os.makedirs(os.path.dirname(INDEX_FILE), exist_ok=True)
-    faiss.write_index(index, INDEX_FILE)
-    with open(METADATA_FILE, "w", encoding="utf-8") as f:
-        json.dump({"texts": texts, "metadata": metadata}, f, ensure_ascii=False, indent=4)
-        
-    print("¡Índice jerárquico y metadatos guardados en disco exitosamente!")
-    
-    return embedder, index, texts, metadata
+    print("¡Entrenamiento finalizado y checkpoints guardados!")
 
 def main():
-    """Función principal para ejecutar el entrenamiento e indexación."""
-    print("Iniciando proceso de preparación y entrenamiento...")
+    """Función principal para ejecutar el entrenamiento utilizando ChromaDB."""
+    print("Iniciando proceso de preparación y entrenamiento con ChromaDB...")
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     dataset = prepare_dataset()
     train_model(dataset)
-    print("¡Entrenamiento y construcción de índices finalizados con éxito!")
+    print("¡Proceso completado con éxito!")
 
 if __name__ == "__main__":
     main()
