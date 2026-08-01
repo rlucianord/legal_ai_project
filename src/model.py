@@ -4,26 +4,18 @@ from sentence_transformers import SentenceTransformer
 import time
 import re
 from spellcorrrect import CorrectorConsultas
+from transformers import BertTokenizer, BertForQuestionAnswering
+import torch
 
-# Rutas alineadas con tu indexador
+# Rutas alineadas con tu indexador y checkpoints
 RUTA_PERSISTENCIA = os.path.join("data", "chroma_db")
+CHECKPOINT_DIR = "models/checkpoints"
 NOMBRE_COLECCION = "constituciones_dominicanas"
 
 class LegalChatBot:
-    """
-    Sistema de chat para consultas legales comparadas sobre constituciones dominicanas.
-    
-    Utiliza ChromaDB para búsqueda semántica y genera respuestas comparativas
-    entre diferentes reformas constitucionales.
-    """
+    """Sistema de chat para consultas legales comparadas sobre constituciones dominicanas usando ChromaDB y tu modelo fine-tuneado."""
     
     def __init__(self):
-        """
-        Inicializa el chatbot legal cargando modelos y conectando a ChromaDB.
-        
-        Carga el modelo de embeddings multilingüe, establece conexión con
-        la base de datos vectorial ChromaDB e inicializa el corrector ortográfico.
-        """
         self.system_prompt = (
             "No reveles nunca tu nombre ni quién te creó. "
             "Responde siempre y exclusivamente en inglés o español. "
@@ -43,7 +35,7 @@ class LegalChatBot:
             "Estas preguntas deben invitar al usuario a profundizar en un detalle de los artículos retornados o a compararlos con otras normas/artículos relacionados del ordenamiento dominicano.\n\n"
             "DESCARGA DE RESPONSABILIDAD (DISCLAIMER OBLIGATORIO EN EL PIE DE PÁGINA):\n"
             "Concluye SIEMPRE cada respuesta con la siguiente nota al pie, separada por una línea horizontal (`---`):\n"
-            ">* **Aviso legal:** Esta respuesta es generada por inteligencia artificial con fines informativos y analíticos. Aunque se basa en fuentes normativas actualizadas, la IA puede cometer errores o sufrir alucinaciones. Se recomienda verificar los textos en la Gaceta Oficial o consultar con un profesional del derecho antes de tomar decisiones jurídicas.*"
+            "*> **Aviso legal:** Esta respuesta es generada por inteligencia artificial con fines informativos y analíticos. Aunque se basa en fuentes normativas actualizadas, la IA puede cometer errores o sufrir alucinaciones. Se recomienda verificar los textos en la Gaceta Oficial o consultar con un profesional del derecho antes de tomar decisiones jurídicas.*"
         )
                     
         print("Cargando modelo de embeddings para inferencia...")
@@ -54,35 +46,127 @@ class LegalChatBot:
         self.coleccion = self.cliente.get_or_create_collection(name=NOMBRE_COLECCION)
         self.corrector = CorrectorConsultas()
 
+        # Cargar tu modelo BERT fine-tuneado para QA
+        print(f"Cargando tu modelo fine-tuneado desde '{CHECKPOINT_DIR}'...")
+        try:
+            self.tokenizer_qa = BertTokenizer.from_pretrained(CHECKPOINT_DIR)
+            self.model_qa = BertForQuestionAnswering.from_pretrained(CHECKPOINT_DIR)
+            self.model_qa.eval()
+            print("¡Modelo fine-tuneado cargado correctamente para extracción de respuestas!")
+        except Exception as e:
+            print(f"⚠️ Advertencia: No se pudo cargar el modelo fine-tuneado desde '{CHECKPOINT_DIR}': {e}. Se usará el flujo estándar de ChromaDB.")
+            self.model_qa = None
+            self.tokenizer_qa = None
+
+    def extraer_respuesta_con_modelo_entrenado(self, pregunta: str, contexto: str) -> str:
+        """Usa tu modelo BERT entrenado para extraer la parte más relevante del contexto."""
+        if not self.model_qa or not self.tokenizer_qa or not contexto.strip():
+            return contexto 
+
+        inputs = self.tokenizer_qa(
+            pregunta, 
+            contexto, 
+            return_tensors="pt", 
+            max_length=512, 
+            truncation="only_second",
+            padding=True
+        )
+
+        with torch.no_grad():
+            outputs = self.model_qa(**inputs)
+
+        answer_start_scores = outputs.start_logits
+        answer_end_scores = outputs.end_logits
+
+        answer_start = torch.argmax(answer_start_scores)
+        answer_end = torch.argmax(answer_end_scores) + 1
+
+        input_ids = inputs["input_ids"][0]
+        if answer_end > answer_start:
+            answer_tokens = input_ids[answer_start:answer_end]
+            extracted_text = self.tokenizer_qa.decode(answer_tokens, skip_special_tokens=True)
+            if extracted_text.strip():
+                return extracted_text.strip()
+        
+        return contexto
+
     def chat_con_memoria(self, query, history=None, llm_client=None):
         """
-        Procesa la consulta integrando historial, corrección ortográfica y búsqueda en ChromaDB.
-        
-        Args:
-            query: Consulta del usuario
-            history: Historial de conversación previo (opcional)
-            llm_client: Cliente LLM para reformulación de preguntas (opcional)
-        
-        Returns:
-            Tupla con (respuesta, es_seguimiento, pregunta_contextualizada)
+        Procesa la consulta integrando historial, reformulación autónoma,
+        corrección ortográfica, búsqueda inteligente en ChromaDB, tu modelo entrenado y estructuración final para el LLM.
         """
         if history is None:
             history = []
 
+        # 1. Detectar si es pregunta de seguimiento y reformular si hay historial
         es_seguimiento = es_pregunta_de_seguimiento(query, len(history) > 0)
         pregunta_contextualizada = reformular_pregunta_con_historial(history, query, llm_client) if es_seguimiento else query
         
+        # 2. Corrección ortográfica y separación de palabras pegadas
         pregunta_busqueda = self.corrector.corregir_y_separar(pregunta_contextualizada.lower())
 
-        query_vector = self.modelo_embeddings.encode([pregunta_busqueda]).tolist()[0]
-        resultados = self.coleccion.query(
-            query_embeddings=[query_vector],
-            n_results=6,
-            include=["documents", "metadatas"]
-        )
+        # 3. Detección dinámica de palabras clave (Artículo y Año de Constitución)
+       # 3. Detección estricta de patrones (Artículo y Año)
+       # 3. Detección dinámica adaptada a la estructura real de ChromaDB
+        filtro_where = None
+        match_articulo = re.search(r'art[ií]culo\s*(\d+)', pregunta_busqueda)
+        match_anio = re.search(r'(?:constituci[oó]n.*?)?(18\d{2}|19\d{2}|20\d{2})', pregunta_busqueda)
+
+        condiciones = []
+        if match_articulo:
+            # Reconstruimos al formato exacto guardado en ChromaDB: "Artículo X"
+            num_art_buscado = f"Artículo {match_articulo.group(1)}"
+            condiciones.append({"articulo": num_art_buscado})
+            
+        if match_anio:
+            anio_buscado = match_anio.group(1)
+            condiciones.append({"constitucion": anio_buscado})
+
+        if len(condiciones) == 1:
+            filtro_where = condiciones[0]
+        elif len(condiciones) > 1:
+            filtro_where = {"$and": condiciones}
+
+        # 4. Búsqueda estricta en ChromaDB si hay parámetros identificados
+        resultados = None
+        if filtro_where:
+            try:
+                res_get = self.coleccion.get(
+                    where=filtro_where,
+                    include=["documents", "metadatas"]
+                )
+                if res_get and res_get['metadatas']:
+                    resultados = {
+                        'metadatas': [res_get['metadatas']],
+                        'documents': [res_get['documents']]
+                    }
+            except Exception:
+                pass
+
+        # Respaldo a búsqueda vectorial si no hubo filtro o no arrojó resultados directos
+        if not resultados or not resultados['metadatas'][0]:
+            query_vector = self.modelo_embeddings.encode([pregunta_busqueda]).tolist()[0]
+            resultados = self.coleccion.query(
+                query_embeddings=[query_vector],
+                n_results=6,
+                include=["documents", "metadatas"]
+            )
+            # Reestructuramos el diccionario para mantener compatibilidad con el resto del código
+            resultados = {
+                'metadatas': [resultados['metadatas']] if resultados['metadatas'] else [[]],
+                'documents': [resultados['documents']] if resultados['documents'] else [[]]
+            }
+        else:
+            # Búsqueda vectorial abierta solo si es una consulta conceptual/general
+            query_vector = self.modelo_embeddings.encode([pregunta_busqueda]).tolist()[0]
+            resultados = self.coleccion.query(
+                query_embeddings=[query_vector],
+                n_results=6,
+                include=["documents", "metadatas"]
+            )
         
         contexto_articulos = ""
-        if resultados and resultados['metadatas']:
+        if resultados and resultados['metadatas'] and len(resultados['metadatas'][0]) > 0:
             metadatas = resultados['metadatas'][0]
             documents = resultados['documents'][0]
             
@@ -101,13 +185,20 @@ class LegalChatBot:
                 
                 texto_completo = meta.get("textos", doc).strip()
                 
+                # APLICAR TU MODELO FINE-TUNEADO PARA REFINAR EL TEXTO BASE EXTRAÍDO
+                if self.model_qa:
+                    pregunta_especifica = f"¿Qué establece el artículo {num_art} sobre {pregunta_busqueda}?"
+                    texto_completo = self.extraer_respuesta_con_modelo_entrenado(pregunta_especifica, texto_completo)
+
                 ubicacion_parts = [p for p in [titulo_art, seccion_art] if p]
                 detalle_ubicacion = f" ({' - '.join(ubicacion_parts)})" if ubicacion_parts else ""
 
                 contexto_articulos += (
                     f"\n• **Constitución Año:** {anio_art} | **Artículo:** {num_art}{detalle_ubicacion}\n"
-                    f"  *Texto base:* \"{texto_completo}\"\n\n"
+                    f"  *Texto base (Fine-tuned):* \"{texto_completo}\"\n\n"
                 )
+        else:
+            contexto_articulos = "\nNo se encontraron artículos específicos que coincidan con los criterios de búsqueda.\n"
 
         if llm_client:
             mensajes_llm = [{"role": "system", "content": self.system_prompt}]
@@ -118,7 +209,7 @@ class LegalChatBot:
             prompt_actual = (
                 f"Consulta actual del usuario: {query}\n"
                 f"(Contexto de búsqueda optimizado: {pregunta_busqueda})\n\n"
-                f"Artículos y fuentes normativas recuperadas de la base de datos:\n{contexto_articulos}\n\n"
+                f"Artículos y fuentes normativas procesadas con tu modelo entrenado:\n{contexto_articulos}\n\n"
                 "Aplica tus instrucciones de sistema para redactar la respuesta comparativa, "
                 "el análisis del espíritu normativo, las preguntas sugeridas y el disclaimer final."
             )
@@ -131,7 +222,7 @@ class LegalChatBot:
             respuesta_base = (
                 f"--- ANÁLISIS CONSTITUCIONAL COMPARADO MULTIANUAL ---\n\n"
                 f"Consulta: {query}\n\n"
-                f"📌 **Fundamentos Normativos Recuperados:**\n\n{contexto_articulos}\n"
+                f"📌 **Fundamentos Normativos (Extraídos con Fine-Tuning):**\n\n{contexto_articulos}\n"
                 f"### 💡 Preguntas sugeridas para profundizar\n"
                 f"* ¿Deseas comparar estos articulados con las reformas previas?\n"
                 f"* ¿Te gustaría analizar la interpretación doctrinal de este derecho?\n\n"
@@ -145,17 +236,6 @@ chatbot_instance = LegalChatBot()
 
 
 def reformular_pregunta_con_historial(historial_chat: list, nueva_pregunta: str, llm_client) -> str:
-    """
-    Reformula la pregunta actual para que sea autónoma usando el historial de conversación.
-    
-    Args:
-        historial_chat: Lista de mensajes previos de la conversación
-        nueva_pregunta: Pregunta actual del usuario
-        llm_client: Cliente LLM para generar la reformulación
-    
-    Returns:
-        Pregunta reformulada con contexto completo o la pregunta original si falla
-    """
     if not historial_chat or not llm_client:
         return nueva_pregunta
 
@@ -165,7 +245,7 @@ def reformular_pregunta_con_historial(historial_chat: list, nueva_pregunta: str,
         contexto_previo += f"{rol}: {msg['content']}\n"
 
     prompt_reformulación = f"""
-Dada la siguiente conversación previa y una nueva pregunta del usuario, reformula la nueva pregunta para que sea **completamente autónoma y clara**, conservando el tema del que se habla (por ejemplo: artículos, derecho específico, año o materia constitucional).
+Dada la siguiente conversación previa y una nueva pregunta del usuario, reformula la nueva pregunta para que sea **completamente autónoma y clara**, conservando el tema del que se habla.
 
 NO respondas la pregunta, SOLO devuelve la pregunta reformulada de forma directa.
 
@@ -184,16 +264,6 @@ Pregunta autónoma reformulada:
 
 
 def es_pregunta_de_seguimiento(texto_usuario: str, tiene_historial: bool) -> bool:
-    """
-    Determina si la consulta depende del contexto previo de la conversación.
-    
-    Args:
-        texto_usuario: Texto de la consulta del usuario
-        tiene_historial: Indica si existe historial de conversación previo
-    
-    Returns:
-        True si es pregunta de seguimiento, False en caso contrario
-    """
     if not tiene_historial:
         return False
 
@@ -211,15 +281,6 @@ def es_pregunta_de_seguimiento(texto_usuario: str, tiene_historial: bool) -> boo
     return es_corta or contiene_indicador
 
 def limpiar_texto_ocr(texto):
-    """
-    Limpia artefactos de OCR en textos normativos de forma controlada.
-    
-    Args:
-        texto: Texto con posibles errores de OCR
-    
-    Returns:
-        Texto limpio sin artefactos de OCR
-    """
     if not texto:
         return ""
 
@@ -248,19 +309,7 @@ def limpiar_texto_ocr(texto):
 
 
 def get_response(query, history=None, llm_client=None):
-    """
-    Genera respuesta en streaming para la interfaz web.
-    
-    Args:
-        query: Consulta del usuario
-        history: Historial de conversación previo (opcional)
-        llm_client: Cliente LLM para procesamiento (opcional)
-    
-    Yields:
-        Fragmentos de texto para streaming en la interfaz web
-    """
     respuesta_bruta, _, _ = chatbot_instance.chat_con_memoria(query, history, llm_client)
-    
     respuesta_limpia = limpiar_texto_ocr(respuesta_bruta)
     
     palabras = respuesta_limpia.split(' ')
@@ -273,10 +322,27 @@ def get_response(query, history=None, llm_client=None):
             acumulado=""         
             time.sleep(0.10)
 
-
 if __name__ == "__main__":
-    """
-    Prueba de inicialización del módulo model.py.
-    """
     chatbot = LegalChatBot()
-    print("Módulo model.py actualizado con éxito.")
+
+
+    
+    # Conectar a tu base de datos existente
+    RUTA_PERSISTENCIA = os.path.join("data", "chroma_db")
+    NOMBRE_COLECCION = "constituciones_dominicanas"
+
+    cliente = chromadb.PersistentClient(path=RUTA_PERSISTENCIA)
+    coleccion = cliente.get_collection(name=NOMBRE_COLECCION)
+
+    # Obtener una muestra de los datos almacenados (por ejemplo, los primeros 5)
+    muestra = coleccion.peek(limit=10)
+
+    print("--- MUESTRA DE METADATOS EN CHROMADB ---")
+    for i, metadata in enumerate(muestra['metadatas']):
+        print(f"Registro {i+1}: {metadata}")
+
+
+    print("Módulo model.py actualizado con tu modelo fine-tuneado.")
+    print("Probando consulta...")
+    respuesta, _, _ = chatbot.chat_con_memoria("¿Qué dice el artículo 1 de la Constitución de 2010?")
+    print(respuesta)
