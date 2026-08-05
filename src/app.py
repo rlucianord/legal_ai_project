@@ -67,6 +67,7 @@ def clear_history():
     session["chat_history"] = []
     session.modified = True
     return jsonify({"status": "success", "message": "Historial limpiado"})
+    
 
 if __name__ == "__main__":
     """
@@ -76,3 +77,4 @@ if __name__ == "__main__":
     """
     print(f"Plantillas cargadas desde: {app.template_folder}")
     app.run(host="0.0.0.0", port=5001, debug=True)
+     
