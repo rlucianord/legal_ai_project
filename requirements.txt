@@ -14,7 +14,8 @@ chromadb
 pypdf
 flask
 flask-cors
-transformers
+tokenizers<=0.23.0
+transformers==5.5.0
 pdf2image
 pytesseract
 pillow
@@ -27,4 +28,10 @@ llama-cpp-python
 pdfplumber
 chromadb
 symspellpy
+addict 
+matplotlib
+easydict
+einops
+
+
 --extra-index-url https://download.pytorch.org/whl/cu121
