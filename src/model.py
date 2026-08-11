@@ -98,78 +98,78 @@ class LegalChatBot:
         if history is None:
             history = []
 
-        # 1. Detectar si es pregunta de seguimiento y reformular si hay historial
+        # 1. Detección robusta de si es pregunta de seguimiento
         es_seguimiento = es_pregunta_de_seguimiento(query, len(history) > 0)
+        
+        # 2. Reformulación basada en historial solo si realmente es seguimiento contextual
         pregunta_contextualizada = reformular_pregunta_con_historial(history, query, llm_client) if es_seguimiento else query
         
-        # 2. Corrección ortográfica y separación de palabras pegadas
+        # 3. Corrección ortográfica y separación de palabras pegadas
         pregunta_busqueda = self.corrector.corregir_y_separar(pregunta_contextualizada.lower())
 
-        # 3. Detección dinámica de palabras clave (Artículo y Año de Constitución)
-       # 3. Detección estricta de patrones (Artículo y Año)
-       # 3. Detección dinámica adaptada a la estructura real de ChromaDB
+        # 4. Soporte multianual / multicónsulta para comparaciones (ej. artículo 62 de 2010 y artículo 62 de 2024)
+        matches_articulos = re.findall(r'art[ií]culo\s*(\d+)', pregunta_busqueda)
+        matches_anios = re.findall(r'(?:constituci[oó]n.*?)?(18\d{2}|19\d{2}|20\d{2})', pregunta_busqueda)
+
+        metadatas = []
+        documents = []
+
+        # Si hay múltiples artículos o años solicitados explícitamente, los buscamos de forma combinada en ChromaDB
+        condiciones_or = []
+        if matches_articulos:
+            for i, art_num in enumerate(matches_articulos):
+                cond_parcial = {"articulo": f"Artículo {art_num}"}
+                if i < len(matches_anios):
+                    cond_parcial = {"$and": [{"articulo": f"Artículo {art_num}"}, {"constitucion": matches_anios[i]}]}
+                condiciones_or.append(cond_parcial)
+
         filtro_where = None
-        match_articulo = re.search(r'art[ií]culo\s*(\d+)', pregunta_busqueda)
-        match_anio = re.search(r'(?:constituci[oó]n.*?)?(18\d{2}|19\d{2}|20\d{2})', pregunta_busqueda)
-
-        condiciones = []
-        if match_articulo:
-            # Reconstruimos al formato exacto guardado en ChromaDB: "Artículo X"
-            num_art_buscado = f"Artículo {match_articulo.group(1)}"
-            condiciones.append({"articulo": num_art_buscado})
+        if len(condiciones_or) == 1:
+            filtro_where = condiciones_or[0]
+        elif len(condiciones_or) > 1:
+            filtro_where = {"$or": condiciones_or}
+        else:
+            # Comportamiento estándar de un solo artículo/año si no hay patrón múltiple
+            match_articulo = re.search(r'art[ií]culo\s*(\d+)', pregunta_busqueda)
+            match_anio = re.search(r'(?:constituci[oó]n.*?)?(18\d{2}|19\d{2}|20\d{2})', pregunta_busqueda)
+            condiciones = []
+            if match_articulo:
+                condiciones.append({"articulo": f"Artículo {match_articulo.group(1)}"})
+            if match_anio:
+                condiciones.append({"constitucion": match_anio.group(1)})
             
-        if match_anio:
-            anio_buscado = match_anio.group(1)
-            condiciones.append({"constitucion": anio_buscado})
+            if len(condiciones) == 1:
+                filtro_where = condiciones[0]
+            elif len(condiciones) > 1:
+                filtro_where = {"$and": condiciones}
 
-        if len(condiciones) == 1:
-            filtro_where = condiciones[0]
-        elif len(condiciones) > 1:
-            filtro_where = {"$and": condiciones}
-
-        # 4. Búsqueda estricta en ChromaDB si hay parámetros identificados
-        resultados = None
+        # Ejecución de la consulta estructurada en ChromaDB
         if filtro_where:
             try:
                 res_get = self.coleccion.get(
                     where=filtro_where,
                     include=["documents", "metadatas"]
                 )
-                if res_get and res_get['metadatas']:
-                    resultados = {
-                        'metadatas': [res_get['metadatas']],
-                        'documents': [res_get['documents']]
-                    }
+                if res_get and res_get.get('metadatas'):
+                    metadatas = res_get['metadatas']
+                    documents = res_get['documents']
             except Exception:
                 pass
 
-        # Respaldo a búsqueda vectorial si no hubo filtro o no arrojó resultados directos
-        if not resultados or not resultados['metadatas'][0]:
+        # Si no arrojó resultados el filtro estricto, realizamos búsqueda vectorial abierta
+        if not metadatas:
             query_vector = self.modelo_embeddings.encode([pregunta_busqueda]).tolist()[0]
             resultados = self.coleccion.query(
                 query_embeddings=[query_vector],
                 n_results=6,
                 include=["documents", "metadatas"]
             )
-            # Reestructuramos el diccionario para mantener compatibilidad con el resto del código
-            resultados = {
-                'metadatas': [resultados['metadatas']] if resultados['metadatas'] else [[]],
-                'documents': [resultados['documents']] if resultados['documents'] else [[]]
-            }
-        else:
-            # Búsqueda vectorial abierta solo si es una consulta conceptual/general
-            query_vector = self.modelo_embeddings.encode([pregunta_busqueda]).tolist()[0]
-            resultados = self.coleccion.query(
-                query_embeddings=[query_vector],
-                n_results=6,
-                include=["documents", "metadatas"]
-            )
-        
+            if resultados and resultados.get('metadatas') and resultados['metadatas'][0]:
+                metadatas = resultados['metadatas'][0]
+                documents = resultados['documents'][0]
+
         contexto_articulos = ""
-        if resultados and resultados['metadatas'] and len(resultados['metadatas'][0]) > 0:
-            metadatas = resultados['metadatas'][0]
-            documents = resultados['documents'][0]
-            
+        if metadatas and documents:
             pares = list(zip(metadatas, documents))
             
             pares_ordenados = sorted(
@@ -178,8 +178,13 @@ class LegalChatBot:
             )
             
             for meta, doc in pares_ordenados:
-                anio_art = meta.get("constitucion", "Desconocido")
                 num_art = meta.get("articulo", "S/N")
+                
+                # FILTRO DE EXCLUSIÓN: Ignorar títulos estructurales o introducciones vacías de contenido legal directo
+                if num_art in ["Introducción", "S/N", "Preámbulo"] or not num_art.lower().startswith("artículo"):
+                    continue
+                
+                anio_art = meta.get("constitucion", "Desconocido")
                 titulo_art = meta.get("titulo", "")
                 seccion_art = meta.get("seccion", "")
                 
@@ -190,12 +195,15 @@ class LegalChatBot:
                     pregunta_especifica = f"¿Qué establece el artículo {num_art} sobre {pregunta_busqueda}?"
                     texto_completo = self.extraer_respuesta_con_modelo_entrenado(pregunta_especifica, texto_completo)
 
+                # Limpieza exhaustiva de espacios innecesarios en el texto recuperado
+                texto_completo = limpiar_texto_ocr(texto_completo)
+
                 ubicacion_parts = [p for p in [titulo_art, seccion_art] if p]
                 detalle_ubicacion = f" ({' - '.join(ubicacion_parts)})" if ubicacion_parts else ""
 
                 contexto_articulos += (
                     f"\n• **Constitución Año:** {anio_art} | **Artículo:** {num_art}{detalle_ubicacion}\n"
-                    f"  *Texto base (Fine-tuned):* \"{texto_completo}\"\n\n"
+                    f"  *Texto base:* \"{texto_completo}\"\n\n"
                 )
         else:
             contexto_articulos = "\nNo se encontraron artículos específicos que coincidan con los criterios de búsqueda.\n"
@@ -210,8 +218,8 @@ class LegalChatBot:
                 f"Consulta actual del usuario: {query}\n"
                 f"(Contexto de búsqueda optimizado: {pregunta_busqueda})\n\n"
                 f"Artículos y fuentes normativas procesadas con tu modelo entrenado:\n{contexto_articulos}\n\n"
-                "Aplica tus instrucciones de sistema para redactar la respuesta comparativa, "
-                "el análisis del espíritu normativo, las preguntas sugeridas y el disclaimer final."
+                f"Aplica tus instrucciones de sistema para redactar la respuesta comparativa, "
+                f"el análisis del espíritu normativo, las preguntas sugeridas y el disclaimer final."
             )
             mensajes_llm.append({"role": "user", "content": prompt_actual})
             
@@ -267,6 +275,13 @@ def es_pregunta_de_seguimiento(texto_usuario: str, tiene_historial: bool) -> boo
     if not tiene_historial:
         return False
 
+    texto_lower = texto_usuario.lower()
+
+    # REGLA ESTRICTA: Las consultas explícitas de comparación o aquellas que especifican un artículo de forma directa nunca son seguimiento ciego
+    palabras_comparacion = ["comparar", "compárame", "compara", "diferencia", "contra", "versus", "vs"]
+    if any(p in texto_lower for p in palabras_comparacion) or "artículo" in texto_lower or "art" in texto_lower:
+        return False
+
     indicadores_seguimiento = [
         "esto", "esta", "este", "estos", "estas",
         "eso", "esa", "esos", "esas",
@@ -274,38 +289,11 @@ def es_pregunta_de_seguimiento(texto_usuario: str, tiene_historial: bool) -> boo
         "y en", "y que", "al respecto", "sobre esto", "mencionas"
     ]
     
-    texto_lower = texto_usuario.lower()
     es_corta = len(texto_lower.split()) < 6
     contiene_indicador = any(p in texto_lower for p in indicadores_seguimiento)
 
     return es_corta or contiene_indicador
 
-# def limpiar_texto_ocr(texto):
-#     if not texto:
-#         return ""
-
-#     texto = re.sub(r'\b\d{1,3}\s*[-–—_]*\s*ASAMBLEA NACIONAL\b', '', texto, flags=re.IGNORECASE)
-#     texto = re.sub(r'[-_]{5,}', '', texto)
-#     texto = re.sub(r'í\'\s*\\|~~-\s*\\|v:k|0\s*\\vi', '', texto)
-    
-#     texto = re.sub(r'(?<=\s)([a-záéíóúñ])\s+([a-záéíóúñ])(?=\s)', r'\1\2', texto, flags=re.IGNORECASE)
-
-#     lineas = texto.splitlines()
-#     lineas_filtradas = [l.strip() for l in lineas if l.strip() and not re.match(r'^[\d\s\-\(\)~]{1,5}$', l.strip())]
-#     texto_unido = " ".join(lineas_filtradas)
-#     texto_estructurado = re.sub(r'\s+(\d{1,2}\))', r'\n\1', texto_unido)
-
-#     lineas_finales = []
-#     vistas = set()
-#     for linea in texto_estructurado.splitlines():
-#         linea_limpia = re.sub(r'\s+', ' ', linea).strip()
-#         clave_linea = linea_limpia[:40] if len(linea_limpia) > 40 else linea_limpia
-#         if clave_linea in vistas and len(linea_limpia) < 80:
-#             continue
-#         vistas.add(clave_linea)
-#         lineas_finales.append(linea_limpia)
-
-#     return "\n".join(lineas_finales)
 
 def limpiar_texto_ocr(texto):
     if not texto:
@@ -340,10 +328,17 @@ def limpiar_texto_ocr(texto):
         lineas_finales.append(linea_limpia)
 
     return "\n".join(lineas_finales)
-
 def get_response(query, history=None, llm_client=None):
+    if history is None:
+        history = []
+        
     respuesta_bruta, _, _ = chatbot_instance.chat_con_memoria(query, history, llm_client)
     respuesta_limpia = limpiar_texto_ocr(respuesta_bruta)
+    
+    # Al ser 'history' una lista, si haces append aquí, se actualiza automáticamente 
+    # por referencia en tu app.py sin necesidad de devolverlo en el yield
+    history.append({"role": "user", "content": query})
+    history.append({"role": "assistant", "content": respuesta_limpia})
     
     palabras = respuesta_limpia.split(' ')
     acumulado = ""
@@ -351,31 +346,30 @@ def get_response(query, history=None, llm_client=None):
     for palabra in palabras:
         acumulado += palabra + " "
         if len(acumulado) >= 30 or '\n' in palabra:
-            yield acumulado    
-            acumulado=""         
+            yield acumulado  # <-- CRÍTICO: Solo devolvemos el texto puro
+            acumulado = ""        
             time.sleep(0.10)
+            
+    if acumulado:
+        yield acumulado # No olvides devolver cualquier remanente de texto
 
 if __name__ == "__main__":
     chatbot = LegalChatBot()
 
-
-    
-    # Conectar a tu base de datos existente
+    # Conectar a tu base de datos existente para pruebas directas
     RUTA_PERSISTENCIA = os.path.join("data", "chroma_db")
     NOMBRE_COLECCION = "constituciones_dominicanas"
 
     cliente = chromadb.PersistentClient(path=RUTA_PERSISTENCIA)
     coleccion = cliente.get_collection(name=NOMBRE_COLECCION)
 
-    # Obtener una muestra de los datos almacenados (por ejemplo, los primeros 5)
     muestra = coleccion.peek(limit=10)
 
     print("--- MUESTRA DE METADATOS EN CHROMADB ---")
     for i, metadata in enumerate(muestra['metadatas']):
         print(f"Registro {i+1}: {metadata}")
 
-
-    print("Módulo model.py actualizado con tu modelo fine-tuneado.")
-    print("Probando consulta...")
-    respuesta, _, _ = chatbot.chat_con_memoria("¿Qué dice el artículo 1 de la Constitución de 2010?")
-    print(respuesta)
+    # print("Módulo model.py actualizado con éxito.")
+    # print("Probando consulta...")
+    # respuesta, _, _ = chatbot.chat_con_memoria("¿Qué dice el artículo 1 de la Constitución de 2010?")
+    # print(respuesta)
