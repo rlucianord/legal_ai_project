@@ -16,8 +16,7 @@ flask
 flask-cors
 tokenizers<=0.23.0
 transformers==5.5.0
-pdf2image
-pytesseract
+docling
 pillow
 opencv-python
 numpy

@@ -2,53 +2,70 @@ import os
 import re
 from pathlib import Path
 import unicodedata
-from pdf2image import convert_from_path
-import pytesseract
-from PyPDF2 import PdfReader
+
+try:
+    from docling.document_converter import DocumentConverter
+except Exception:  # pragma: no cover - optional dependency
+    DocumentConverter = None
+
+try:
+    from PyPDF2 import PdfReader
+except Exception:  # pragma: no cover - optional dependency
+    PdfReader = None
+
 from pdfminer.high_level import extract_text as pdfminer_extract_text
 import chromadb
 from sentence_transformers import SentenceTransformer
 from spellcorrrect import CorrectorConsultas
 
-POPPLER_PATH = os.path.join(os.getcwd(), "poppler-24.08.0", "Library", "bin")
-if not os.path.exists(POPPLER_PATH):
-    POPPLER_PATH = os.path.join(os.getcwd(), "poppler-24.08.0", "bin")
 
-TESSERACT_PATH = os.path.join(os.getcwd(), "Tesseract-OCR", "tesseract.exe")
-if os.path.exists(TESSERACT_PATH):
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-    print(f"✅ Tesseract localizado en: {TESSERACT_PATH}")
+if DocumentConverter is not None:
+    print("✅ Docling localizado para extracción de documentos con IA.")
 else:
-    print(f"⚠️ Advertencia: No se encontró Tesseract en '{TESSERACT_PATH}'.")
+    print("⚠️ Docling no está instalado. Se usará fallback textual si está disponible.")
 
-if os.path.exists(POPPLER_PATH):
-    print(f"✅ Poppler localizado en: {POPPLER_PATH}")
-else:
-    print(f"⚠️ Advertencia: No se encontró Poppler en '{POPPLER_PATH}'.")
+
+def extract_text_with_docling(file_path: str) -> str:
+    """
+    Extrae texto de PDFs y documentos con Docling (IBM), que integra OCR/IA.
+    """
+    if DocumentConverter is None:
+        return ""
+
+    try:
+        converter = DocumentConverter()
+        result = converter.convert(file_path)
+
+        if isinstance(result, list):
+            result = result[0] if result else None
+
+        if result is None:
+            return ""
+
+        document = getattr(result, "document", None)
+        if document is None:
+            return ""
+
+        if hasattr(document, "export_to_text"):
+            text = document.export_to_text()
+            if isinstance(text, str) and text.strip():
+                return text
+
+        text = getattr(document, "text", None)
+        if isinstance(text, str) and text.strip():
+            return text
+
+        return ""
+    except Exception as e:
+        print(f"Error en extracción con Docling para {file_path}: {e}")
+        return ""
 
 
 def extract_text_with_ocr(file_path: str) -> str:
     """
-    Extrae texto de PDFs escaneados usando OCR con Tesseract.
-    
-    Args:
-        file_path: Ruta al archivo PDF
-    
-    Returns:
-        Texto extraído mediante OCR o cadena vacía si falla
+    Compatibilidad con el flujo previo: ahora usa Docling como extractor IA/OCR.
     """
-    try:
-        if not os.path.exists(POPPLER_PATH) or not os.path.exists(TESSERACT_PATH):
-            return ""
-        images = convert_from_path(file_path, poppler_path=POPPLER_PATH)
-        texto_completo = []
-        for image in images:
-            texto_pagina = pytesseract.image_to_string(image, lang='spa')
-            texto_completo.append(texto_pagina)
-        return "\n".join(texto_completo)
-    except Exception as e:
-        print(f"Error en extracción OCR para {file_path}: {e}")
-        return ""
+    return extract_text_with_docling(file_path)
 
 def extract_text(file_path: str) -> str:
     """
@@ -63,25 +80,31 @@ def extract_text(file_path: str) -> str:
         Texto extraído del PDF
     """
     try:
+        texto_docling = extract_text_with_ocr(file_path)
+        if texto_docling and len(texto_docling.strip()) > 50:
+            return texto_docling
+    except Exception:
+        pass
+
+    try:
         texto = pdfminer_extract_text(file_path)
         if texto and len(texto.strip()) > 50:
             return texto
     except Exception:
         pass
 
-    try:
-        texto_ocr = extract_text_with_ocr(file_path)
-        if texto_ocr and len(texto_ocr.strip()) > 50:
-            return texto_ocr
-    except Exception:
-        pass
-    
-    reader = PdfReader(file_path)
-    text = ""
-    for page in reader.pages:
-        page_text = page.extract_text() or ""
-        text += page_text + "\n"
-    return text
+    if PdfReader is not None:
+        try:
+            reader = PdfReader(file_path)
+            text = ""
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                text += page_text + "\n"
+            return text
+        except Exception:
+            pass
+
+    return ""
 
 def normalize_spanish(text: str) -> str:
     """
